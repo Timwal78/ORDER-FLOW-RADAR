@@ -30,7 +30,7 @@ class MarketScanner:
             "crypto": [],
             "timestamp": None
         }
-        900 = 3600  # 1 hour
+        self.cache_duration = 900  # 15 minutes
 
     async def discover_equities(self, top_n: int = 100) -> List[str]:
         """
@@ -120,7 +120,7 @@ class MarketScanner:
 
         # Check cache validity
         if (self.scan_cache["timestamp"] and
-                (now - self.scan_cache["timestamp"]).total_seconds() < 900):
+                (now - self.scan_cache["timestamp"]).total_seconds() < self.cache_duration):
             logger.info("Returning cached scan targets")
             return {
                 "equities": self.scan_cache["equities"],
@@ -148,4 +148,4 @@ class MarketScanner:
     async def get_all_symbols(self) -> List[str]:
         """Get combined list of all discoverable symbols."""
         targets = await self.get_scan_targets()
-        return targets["equities"] + targets["crypto"]
+        return targe
