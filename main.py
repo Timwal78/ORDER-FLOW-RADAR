@@ -1,25 +1,21 @@
 """
-TradingSignalOrchestrator: Main orchestrator for the trading system.
-Drives market discovery, scanning, signal evaluation, outcome tracking, and learning.
-
-Architecture:
-1. Market Discovery: Refresh every hour
-2. Continuous Scanning Loop: Scan all discovered symbols
-3. Outcome Checker: Check if signals hit TP/SL every 5 minutes
-4. Learner Retraining: Every 24 hours or every 50 completed signals
-5. FastAPI Server: REST API + WebSocket for live signals
+Order Flow Radar — Main Orchestrator
+REAL DATA ONLY. Open fetch — no watchlist, no demo, no static symbols.
+Every scan: discovers what Alpaca says is hot RIGHT NOW, fetches bars live, evaluates, alerts.
+Fires: whale prints, sweeps, unusual vol, call/put sweeps, confluence signals.
 """
 
 import asyncio
 import logging
-import signal
-import os
+import signal as _signal
 import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-# Signal modules
+import aiohttp
+import uvicorn
+
 from signals.orderflow import OrderFlowSignals
 from signals.momentum import MomentumSignals
 from signals.volume import VolumeSignals
@@ -28,348 +24,465 @@ from signals.levels import LevelSignals
 from signals.confluence import ConfluenceEngine
 from signals.learner import SignalLearner
 
-# Alert modules
-from alerts.formatter import format_discord_embed
+from alerts.formatter import format_discord_embed, format_free_tier_embed
 from alerts.discord_webhook import DiscordAlerter
 from alerts.journal import SignalJournal
 
-# Data and discovery
 from market_scanner import MarketScanner
-
-# Configuration
-from config import load_config
-
-# Web server
-import uvicorn
+from config import load_config, ALPACA_API_KEY, ALPACA_SECRET_KEY
 
 logger = logging.getLogger(__name__)
 
+# ── Thresholds ─────────────────────────────────────────────────────────────
+WHALE_VOL_MULT      = 5.0      # 5x avg volume
+SWEEP_VOL_MULT      = 3.0      # 3x avg volume
+UNUSUAL_VOL_MULT    = 2.5      # 2.5x avg volume
+MIN_WHALE_DOLLARS   = 500_000  # $500k min
+CONFLUENCE_MIN      = 5.0
+COOLDOWN_SECONDS    = 300      # 5 min cooldown per symbol per alert type
+ALPACA_HEADERS      = {"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY}
+EQUITY_SCAN_SECS    = 60
+CRYPTO_SCAN_SECS    = 30
+DISCOVERY_SECS      = 900      # rediscover every 15 min for freshest symbols
+
+
+# ── On-demand bar fetcher ──────────────────────────────────────────────────
+
+async def fetch_bars(session: aiohttp.ClientSession, symbol: str,
+                     timeframe: str = "1Hour", limit: int = 100) -> Optional[List[Dict]]:
+    """Fetch OHLCV bars directly from Alpaca REST. Returns list of dicts or None."""
+    try:
+        url = "https://data.alpaca.markets/v2/stocks/bars"
+        params = {"symbols": symbol, "timeframe": timeframe, "limit": limit, "feed": "iex"}
+        async with session.get(url, headers=ALPACA_HEADERS, params=params,
+                               timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                raw = data.get("bars", {}).get(symbol, [])
+                return [{"open": b["o"], "high": b["h"], "low": b["l"],
+                          "close": b["c"], "volume": b["v"],
+                          "timestamp": b.get("t", "")} for b in raw] if raw else None
+            return None
+    except Exception:
+        return None
+
+
+async def fetch_latest_quote(session: aiohttp.ClientSession, symbol: str) -> Optional[float]:
+    """Fetch latest mid price from Alpaca."""
+    try:
+        url = "https://data.alpaca.markets/v2/stocks/quotes/latest"
+        params = {"symbols": symbol, "feed": "iex"}
+        async with session.get(url, headers=ALPACA_HEADERS, params=params,
+                               timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                q = data.get("quotes", {}).get(symbol, {})
+                bid = float(q.get("bp", 0))
+                ask = float(q.get("ap", 0))
+                if bid > 0 and ask > 0:
+                    return (bid + ask) / 2
+                return float(q.get("ap", 0)) or float(q.get("bp", 0)) or None
+    except Exception:
+        return None
+
+
+async def fetch_snapshot(session: aiohttp.ClientSession, symbol: str) -> Optional[Dict]:
+    """Fetch Alpaca snapshot (VWAP, daily vol, etc)."""
+    try:
+        url = f"https://data.alpaca.markets/v2/stocks/snapshots"
+        params = {"symbols": symbol, "feed": "iex"}
+        async with session.get(url, headers=ALPACA_HEADERS, params=params,
+                               timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                snap = data.get("snapshots", {}).get(symbol, {})
+                daily = snap.get("dailyBar", {})
+                return {
+                    "vwap":         float(daily.get("vw", 0)),
+                    "daily_volume": float(daily.get("v", 0)),
+                    "daily_open":   float(daily.get("o", 0)),
+                    "daily_close":  float(daily.get("c", 0)),
+                }
+    except Exception:
+        return None
+
+
+# ── Orchestrator ──────────────────────────────────────────────────────────
 
 class TradingSignalOrchestrator:
-    """Main orchestrator for the trading signal system."""
 
     def __init__(self, config: Dict):
-        self.config = config
+        self.config  = config
         self.running = True
 
         # Signal modules
-        self.orderflow_signals = OrderFlowSignals(config)
-        self.momentum_signals = MomentumSignals(config)
-        self.volume_signals = VolumeSignals(config)
-        self.trend_signals = TrendSignals(config)
-        self.level_signals = LevelSignals(config)
-        self.confluence_engine = ConfluenceEngine(config)
+        self.orderflow = OrderFlowSignals(config)
+        self.momentum  = MomentumSignals(config)
+        self.volume    = VolumeSignals(config)
+        self.trend     = TrendSignals(config)
+        self.levels    = LevelSignals(config)
+        self.confluence = ConfluenceEngine(config)
 
-        # Alert modules
-        self.discord_alerter = DiscordAlerter(config)
-        self.journal = SignalJournal(config)
+        # Alerts
+        self.discord  = DiscordAlerter(config)
+        self.journal  = SignalJournal(config)
 
         # Learning
-        self.learner = SignalLearner()
-        self.confluence_engine.set_weights(self.learner.get_weights())
+        self.learner  = SignalLearner()
+        self.confluence.set_weights(self.learner.get_weights())
 
-        # Market discovery
-        self.market_scanner = MarketScanner()
+        # Discovery
+        self.scanner  = MarketScanner()
+        self.equities: List[str] = []
+        self.cryptos:  List[str] = []
 
-        # Data storage
-        self.crypto_data = {}
-        self.equity_data = {}
+        # Cooldown tracker: {f"{type}_{symbol}": datetime}
+        self.last_alert: Dict[str, datetime] = {}
 
         # Stats
-        self.signals_generated_today = 0
-        self.last_retraining = datetime.utcnow()
+        self.signals = 0
+        self.whales  = 0
+        self.sweeps  = 0
 
-        logger.info("TradingSignalOrchestrator initialized")
+        logger.info("Orchestrator ready — OPEN FETCH mode, no watchlist")
 
     def is_market_hours(self) -> bool:
-        """Check if current time is during US market hours (9:30-16:00 ET, Mon-Fri)."""
-        now = datetime.now(ZoneInfo("US/Eastern"))
-        weekday = now.weekday()
-        hour = now.hour
-        minute = now.minute
+        now  = datetime.now(ZoneInfo("America/New_York"))
+        mins = now.hour * 60 + now.minute
+        return now.weekday() < 5 and 9 * 60 + 30 <= mins <= 16 * 60 + 30
 
-        # Monday=0, Friday=4
-        if weekday >= 5:
-            return False
+    def is_extended_hours(self) -> bool:
+        now  = datetime.now(ZoneInfo("America/New_York"))
+        mins = now.hour * 60 + now.minute
+        return now.weekday() < 5 and 4 * 60 <= mins <= 20 * 60
 
-        market_open = hour * 60 + minute >= 9 * 60 + 30
-        market_close = hour * 60 + minute <= 16 * 60
+    def _cooled(self, key: str) -> bool:
+        last = self.last_alert.get(key)
+        return bool(last and (datetime.utcnow() - last).total_seconds() < COOLDOWN_SECONDS)
 
-        return market_open and market_close
+    def _stamp(self, key: str):
+        self.last_alert[key] = datetime.utcnow()
 
-    async def evaluate_symbol(self, symbol: str, data: Dict, is_crypto: bool = False) -> Optional[Dict]:
-        """
-        Evaluate all signals for a symbol.
-        Returns trade card if confluence meets threshold.
-        REAL DATA ONLY - if data is missing/invalid, return None (skip symbol).
-        """
+    # ── Discord helpers ───────────────────────────────────────────────────
+
+    async def _send_pro(self, embed: Dict):
+        await self.discord._post_webhook(self.discord.webhook_pro, embed)
+
+    async def _send_premium(self, embed: Dict):
+        await self.discord._post_webhook(self.discord.webhook_premium, embed)
+
+    async def _send_free(self, embed: Dict):
+        await self.discord._post_webhook(self.discord.webhook_free, embed)
+
+    async def _send_all(self, embed: Dict):
+        await asyncio.gather(
+            self._send_pro(embed),
+            self._send_premium(embed),
+            self._send_free(embed),
+            return_exceptions=True
+        )
+
+    # ── Alert builders ────────────────────────────────────────────────────
+
+    async def alert_whale(self, symbol: str, price: float, vol: float,
+                           avg_vol: float, dollar_val: float):
+        key = f"whale_{symbol}"
+        if self._cooled(key): return
+        self._stamp(key)
+        self.whales += 1
+        ratio = vol / avg_vol if avg_vol > 0 else 0
+        embed = {
+            "title":       f"🐋 WHALE PRINT — {symbol}",
+            "description": f"**{ratio:.1f}x** avg volume  |  **${dollar_val:,.0f}** printed",
+            "color":       0xFFD700,
+            "fields": [
+                {"name": "Price",     "value": f"${price:.2f}",         "inline": True},
+                {"name": "Volume",    "value": f"{vol:,.0f}",            "inline": True},
+                {"name": "Ratio",     "value": f"{ratio:.1f}x avg",      "inline": True},
+                {"name": "$ Value",   "value": f"${dollar_val:,.0f}",    "inline": True},
+            ],
+            "footer": {"text": f"Order Flow Radar  |  {datetime.utcnow().strftime('%H:%M:%S UTC')}"}
+        }
+        await self._send_pro(embed)
+        await self._send_premium(embed)
+        logger.info(f"🐋 WHALE {symbol} ${dollar_val:,.0f} ({ratio:.1f}x)")
+
+    async def alert_sweep(self, symbol: str, price: float,
+                           direction: str, ratio: float, bars_count: int):
+        key = f"sweep_{symbol}_{direction}"
+        if self._cooled(key): return
+        self._stamp(key)
+        self.sweeps += 1
+        emoji = "🟢" if direction == "bull" else "🔴"
+        label = "BULL SWEEP" if direction == "bull" else "BEAR SWEEP"
+        embed = {
+            "title":       f"{emoji} {label} — {symbol}",
+            "description": f"**{ratio:.1f}x** volume over {bars_count} bars",
+            "color":       0x00FF00 if direction == "bull" else 0xFF0000,
+            "fields": [
+                {"name": "Price",   "value": f"${price:.2f}", "inline": True},
+                {"name": "Ratio",   "value": f"{ratio:.1f}x", "inline": True},
+            ],
+            "footer": {"text": f"Order Flow Radar  |  {datetime.utcnow().strftime('%H:%M:%S UTC')}"}
+        }
+        await self._send_pro(embed)
+        logger.info(f"{emoji} SWEEP {symbol} {ratio:.1f}x ({direction})")
+
+    async def alert_unusual_volume(self, symbol: str, price: float,
+                                    ratio: float, direction: str):
+        key = f"uvol_{symbol}"
+        if self._cooled(key): return
+        self._stamp(key)
+        d = "🟢" if direction == "up" else "🔴"
+        embed = {
+            "title":       f"⚡ UNUSUAL VOLUME — {symbol}",
+            "description": f"{d} **{ratio:.1f}x** average volume",
+            "color":       0xFF8C00,
+            "fields": [
+                {"name": "Price", "value": f"${price:.2f}", "inline": True},
+                {"name": "Ratio", "value": f"{ratio:.1f}x", "inline": True},
+            ],
+            "footer": {"text": f"Order Flow Radar  |  {datetime.utcnow().strftime('%H:%M:%S UTC')}"}
+        }
+        await self._send_free(embed)
+        await self._send_pro(embed)
+        logger.info(f"⚡ UVOL {symbol} {ratio:.1f}x ({direction})")
+
+    async def alert_signal(self, trade_card: Dict):
+        symbol = trade_card["symbol"]
+        key = f"signal_{symbol}"
+        if self._cooled(key): return
+        self._stamp(key)
+        self.signals += 1
+
+        full = format_discord_embed(trade_card)
+        free = format_free_tier_embed(trade_card)
+
+        if full:
+            await self._send_pro(full)
+            await self._send_premium(full)
+        if free:
+            self.discord.free_delay_queue.append({
+                "embed":   free,
+                "send_at": datetime.utcnow() + timedelta(minutes=5)
+            })
+
+        await self.journal.log_signal(trade_card)
+        await self.learner.record_signal(trade_card)
+        logger.info(f"🚨 SIGNAL {symbol} {trade_card.get('direction','?').upper()} score={trade_card.get('score',0):.1f}")
+
+    # ── Per-symbol evaluation ─────────────────────────────────────────────
+
+    async def scan_equity(self, session: aiohttp.ClientSession, symbol: str):
         try:
-            current_price = data.get("price", 0)
-            if current_price <= 0:
-                return None
+            # Fetch bars + quote + snapshot live — no cache, no watchlist
+            bars = await fetch_bars(session, symbol, "1Hour", 100)
+            if not bars or len(bars) < 5:
+                return
 
-            book_data = data.get("book", {})
-            trades = data.get("trades", [])
-            bars_dict = data.get("bars", {})
-            atr = data.get("atr")
+            price = await fetch_latest_quote(session, symbol)
+            if not price:
+                price = bars[-1]["close"]
+            if price <= 0:
+                return
 
-            # Evaluate all signal types
-            orderflow = self.orderflow_signals.evaluate(symbol, book_data, trades)
-            momentum = self.momentum_signals.evaluate(symbol, bars_dict.get("1hr"), data.get("vwap"))
-            volume = self.volume_signals.evaluate(symbol, bars_dict.get("1hr"), trades)
-            trend = self.trend_signals.evaluate(symbol, bars_dict)
-            levels = self.level_signals.evaluate(symbol, bars_dict.get("1hr"), current_price)
+            snap = await fetch_snapshot(session, symbol)
+            vwap = snap["vwap"] if snap else None
 
-            # Aggregate all signals
+            # Volume analysis
+            vols    = [b["volume"] for b in bars if b["volume"] > 0]
+            cur_vol = vols[-1] if vols else 0
+            avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1) if len(vols) > 1 else 0
+
+            if avg_vol > 0 and cur_vol > 0:
+                ratio = cur_vol / avg_vol
+                dollar_val = cur_vol * price
+                direction  = "up" if bars[-1]["close"] >= bars[-1]["open"] else "down"
+
+                if ratio >= WHALE_VOL_MULT and dollar_val >= MIN_WHALE_DOLLARS:
+                    await self.alert_whale(symbol, price, cur_vol, avg_vol, dollar_val)
+
+                elif ratio >= UNUSUAL_VOL_MULT:
+                    await self.alert_unusual_volume(symbol, price, ratio, direction)
+
+                # Sweep: 3x vol surge in last 3 bars
+                if len(vols) >= 4:
+                    recent_avg = sum(vols[-4:-1]) / 3
+                    if recent_avg > 0 and cur_vol / recent_avg >= SWEEP_VOL_MULT:
+                        sweep_dir = "bull" if direction == "up" else "bear"
+                        await self.alert_sweep(symbol, price, sweep_dir,
+                                               cur_vol / recent_avg, 3)
+
+            # Full confluence signal evaluation
             all_signals = {
-                "orderflow": orderflow,
-                "momentum": momentum,
-                "volume": volume,
-                "trend": trend,
-                "levels": levels
+                "orderflow": self.orderflow.evaluate(symbol, {}, []),
+                "momentum":  self.momentum.evaluate(symbol, bars, vwap),
+                "volume":    self.volume.evaluate(symbol, bars, []),
+                "trend":     self.trend.evaluate(symbol, {"1hr": bars}),
+                "levels":    self.levels.evaluate(symbol, bars, price),
             }
 
-            # Get confluences and generate trade card
-            timeframe = "24/7" if is_crypto else "9:30-16:00 ET"
-            trade_card = self.confluence_engine.evaluate(
-                symbol,
-                all_signals,
-                current_price,
-                atr,
-                timeframe
-            )
-
-            if trade_card:
-                logger.info(f"Signal generated: {symbol} {trade_card['direction']} @ {current_price}")
-                return trade_card
-
-            return None
+            tc = self.confluence.evaluate(symbol, all_signals, price, None, "multi")
+            if tc and tc.get("score", 0) >= CONFLUENCE_MIN:
+                await self.alert_signal(tc)
 
         except Exception as e:
-            logger.error(f"Error evaluating signals for {symbol}: {e}")
-            return None
+            logger.debug(f"scan_equity {symbol}: {e}")
 
-    async def process_trade_card(self, trade_card: Dict):
-        """Process generated trade card: format and send alerts, log to journal."""
-        try:
-            # Format Discord embed
-            embed = format_discord_embed(trade_card)
+    # ── Background tasks ──────────────────────────────────────────────────
 
-            if embed:
-                # Send to Discord
-                sent = await self.discord_alerter.send_alert(embed)
-                if sent:
-                    logger.info(f"Discord alert sent for {trade_card['symbol']}")
-
-                # Log to journal
-                await self.journal.log_signal(trade_card)
-
-                # Record for learner
-                await self.learner.record_signal(trade_card)
-
-                self.signals_generated_today += 1
-
-        except Exception as e:
-            logger.error(f"Error processing trade card: {e}")
-
-    async def market_discovery_task(self):
-        """
-        Refresh market targets every hour.
-        Gets fresh symbols from API (most active, gainers, losers).
-        """
-        logger.info("Market discovery task started")
-
+    async def discovery_task(self):
+        """Rediscover hottest symbols every 15 min. Completely open — no watchlist."""
+        logger.info("Discovery task started — open fetch, no watchlist")
         while self.running:
             try:
-                logger.info("Refreshing market targets...")
-                targets = await self.market_scanner.get_scan_targets()
-                logger.info(f"Discovery: {len(targets['equities'])} equities, {len(targets['crypto'])} crypto")
-                await asyncio.sleep(3600)  # 1 hour
-
+                targets      = await self.scanner.get_scan_targets()
+                self.equities = targets.get("equities", [])
+                self.cryptos  = targets.get("crypto", [])
+                logger.info(f"Discovered: {len(self.equities)} equities, {len(self.cryptos)} crypto")
             except Exception as e:
-                logger.error(f"Error in market discovery: {e}")
-                await asyncio.sleep(300)  # retry in 5 min
+                logger.error(f"Discovery error: {e}")
+            await asyncio.sleep(DISCOVERY_SECS)
 
-    async def continuous_scan_task(self):
-        """
-        Continuously scan discovered symbols for qualified signals.
-        Equities: every 60 seconds during market hours
-        Crypto: every 30 seconds 24/7
-        """
-        logger.info("Continuous scan task started")
+    async def equity_scan_task(self):
+        """Scan all discovered equities every 60s during market hours."""
+        logger.info("Equity scan task started")
+        await asyncio.sleep(20)  # wait for first discovery
 
         while self.running:
             try:
-                # Get current scan targets
-                targets = await self.market_scanner.get_scan_targets()
+                if self.is_extended_hours() and self.equities:
+                    logger.info(f"Scanning {len(self.equities)} equities (open fetch)...")
 
-                # Scan equities during market hours
-                if self.is_market_hours():
-                    equity_symbols = targets.get("equities", [])
-                    logger.debug(f"Scanning {len(equity_symbols)} equities...")
+                    # Batch into groups of 20 to avoid hammering API
+                    async with aiohttp.ClientSession() as session:
+                        for i in range(0, len(self.equities), 20):
+                            batch = self.equities[i:i+20]
+                            await asyncio.gather(
+                                *[self.scan_equity(session, sym) for sym in batch],
+                                return_exceptions=True
+                            )
+                            await asyncio.sleep(1)  # brief pause between batches
 
-                    for symbol in equity_symbols:
-                        if symbol not in self.equity_data:
-                            continue
+                    logger.info(
+                        f"Scan done — signals: {self.signals} | "
+                        f"whales: {self.whales} | sweeps: {self.sweeps}"
+                    )
+                else:
+                    logger.debug("Market closed — waiting")
+            except Exception as e:
+                logger.error(f"Equity scan error: {e}")
+            await asyncio.sleep(EQUITY_SCAN_SECS)
 
-                        data = self.equity_data[symbol]
-                        trade_card = await self.evaluate_symbol(symbol, data, is_crypto=False)
+    async def crypto_scan_task(self):
+        """Scan crypto every 30s 24/7."""
+        from data.alpaca_crypto import AlpacaCryptoHandler
+        crypto_handler = AlpacaCryptoHandler()
 
-                        if trade_card:
-                            await self.process_trade_card(trade_card)
+        # Start WebSocket in background
+        asyncio.create_task(crypto_handler.start())
+        await asyncio.sleep(10)
 
-                # Scan crypto 24/7 (more frequently)
-                crypto_symbols = targets.get("crypto", [])
-                logger.debug(f"Scanning {len(crypto_symbols)} crypto...")
-
-                for symbol in crypto_symbols:
-                    if symbol not in self.crypto_data:
+        logger.info("Crypto scan task started")
+        while self.running:
+            try:
+                for symbol in self.cryptos:
+                    price = crypto_handler.get_mid(symbol)
+                    if not price:
                         continue
 
-                    data = self.crypto_data[symbol]
-                    trade_card = await self.evaluate_symbol(symbol, data, is_crypto=True)
+                    book   = crypto_handler.get_book(symbol)
+                    trades = crypto_handler.get_trades(symbol, 200)
 
-                    if trade_card:
-                        await self.process_trade_card(trade_card)
+                    key = f"signal_{symbol}"
+                    if self._cooled(key):
+                        continue
 
-                # Sleep based on asset type
-                await asyncio.sleep(30)  # crypto frequency
+                    all_signals = {
+                        "orderflow": self.orderflow.evaluate(symbol, book, trades),
+                        "momentum":  self.momentum.evaluate(symbol, [], None),
+                        "volume":    self.volume.evaluate(symbol, [], trades),
+                        "trend":     self.trend.evaluate(symbol, {}),
+                        "levels":    self.levels.evaluate(symbol, [], price),
+                    }
 
-            except Exception as e:
-                logger.error(f"Error in continuous scan: {e}")
-                await asyncio.sleep(5)
-
-    async def outcome_check_task(self):
-        """
-        Check if open signals have hit TP or SL.
-        Runs every 5 minutes to update learner with outcomes.
-        """
-        logger.info("Outcome check task started")
-
-        while self.running:
-            try:
-                # Collect all current prices
-                current_prices = {}
-                for symbol, data in self.equity_data.items():
-                    if "price" in data:
-                        current_prices[symbol] = data["price"]
-                for symbol, data in self.crypto_data.items():
-                    if "price" in data:
-                        current_prices[symbol] = data["price"]
-
-                # Check outcomes
-                if current_prices:
-                    await self.learner.check_outcomes(current_prices)
-
-                await asyncio.sleep(300)  # 5 minutes
+                    tc = self.confluence.evaluate(symbol, all_signals, price, None, "24/7")
+                    if tc and tc.get("score", 0) >= CONFLUENCE_MIN:
+                        await self.alert_signal(tc)
 
             except Exception as e:
-                logger.error(f"Error in outcome check: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"Crypto scan error: {e}")
+            await asyncio.sleep(CRYPTO_SCAN_SECS)
 
-    async def learner_retrain_task(self):
-        """
-        Retrain learner periodically.
-        Runs every 24 hours or after 50 new signals.
-        """
-        logger.info("Learner retrain task started")
-
+    async def free_queue_task(self):
         while self.running:
             try:
-                await asyncio.sleep(86400)  # 24 hours
+                await self.discord.process_free_queue()
+            except Exception as e:
+                logger.error(f"Free queue: {e}")
+            await asyncio.sleep(60)
 
-                logger.info("Starting learner retraining...")
+    async def learner_task(self):
+        while self.running:
+            await asyncio.sleep(86400)
+            try:
                 await self.learner.retrain()
-
-                # Update confluence engine with new weights
-                self.confluence_engine.set_weights(self.learner.get_weights())
-
-                self.last_retraining = datetime.utcnow()
-                logger.info("Learner retraining complete")
-
+                self.confluence.set_weights(self.learner.get_weights())
+                logger.info("Learner retrained")
             except Exception as e:
-                logger.error(f"Error in learner retrain: {e}")
-                await asyncio.sleep(3600)
+                logger.error(f"Learner: {e}")
 
     async def run(self):
-        """
-        Main orchestration: start all async tasks.
-        """
-        logger.info("Starting TradingSignalOrchestrator")
-
-        tasks = [
-            self.market_discovery_task(),
-            self.continuous_scan_task(),
-            self.outcome_check_task(),
-            self.learner_retrain_task(),
-        ]
-
-        try:
-            await asyncio.gather(*tasks)
-        except asyncio.CancelledError:
-            logger.info("Orchestrator tasks cancelled")
-        except Exception as e:
-            logger.error(f"Error in orchestrator: {e}")
-        finally:
-            self.running = False
+        logger.info("All tasks starting")
+        await asyncio.gather(
+            self.discovery_task(),
+            self.equity_scan_task(),
+            self.crypto_scan_task(),
+            self.free_queue_task(),
+            self.learner_task(),
+            return_exceptions=True
+        )
 
     def shutdown(self):
-        """Graceful shutdown."""
-        logger.info("Shutting down orchestrator")
         self.running = False
 
 
 def run_api_server():
-    """Run FastAPI server in a separate thread."""
     try:
         from server import app
-        logger.info("Starting FastAPI web server on 0.0.0.0:8080")
-        uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+        uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
     except Exception as e:
-        logger.error(f"Error running API server: {e}")
+        logger.error(f"API server: {e}")
 
 
 async def main():
-    """Main entry point."""
-    # Setup logging
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s"
     )
 
-    logger.info("Starting Order Flow Radar Trading Signal System")
-    logger.info("Mode: REAL DATA ONLY - No mock data, no demo mode")
+    logger.info("=" * 60)
+    logger.info("  ORDER FLOW RADAR — LIVE")
+    logger.info("  OPEN FETCH — no watchlist, no demo, no fake data")
+    logger.info("  Whale prints | Sweeps | Unusual Vol | Confluence")
+    logger.info("=" * 60)
 
-    # Load configuration
     config = load_config()
+    orch   = TradingSignalOrchestrator(config)
 
-    # Initialize orchestrator
-    orchestrator = TradingSignalOrchestrator(config)
+    threading.Thread(target=run_api_server, daemon=True).start()
 
-    # Start FastAPI server in a background thread
-    api_thread = threading.Thread(target=run_api_server, daemon=True)
-    api_thread.start()
-    logger.info("API server thread started")
+    def _shutdown(signum, frame):
+        orch.shutdown()
 
-    # Setup signal handlers for graceful shutdown
-    def handle_shutdown(signum, frame):
-        logger.info(f"Received signal {signum}, shutting down...")
-        orchestrator.shutdown()
+    _signal.signal(_signal.SIGINT,  _shutdown)
+    _signal.signal(_signal.SIGTERM, _shutdown)
 
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
-
-    # Run orchestrator
     try:
-        await orchestrator.run()
-    except KeyboardInterrupt:
-        logger.info("Received keyboard interrupt")
-        orchestrator.shutdown()
+        await orch.run()
     except Exception as e:
-        logger.error(f"Unexpected error in main: {e}")
-        orchestrator.shutdown()
-
-    logger.info("Order Flow Radar trading signal system stopped")
+        logger.error(f"Fatal: {e}")
+        orch.shutdown()
 
 
 if __name__ == "__main__":
