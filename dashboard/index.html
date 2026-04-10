@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Flow Radar - Live Terminal</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            font-family: 'JetBrains Mono', monospace;
+            background: #0a0a0a;
+            color: #e0e0e0;
+        }
+
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-panel: #111111;
+            --border: #222222;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888888;
+            --bullish: #00ff88;
+            --bearish: #ff3355;
+            --fire: #ffd700;
+        }
+
+        .container {
+            display: grid;
+            grid-template-rows: 50px 1fr 60px;
+            height: 100vh;
+            gap: 0;
+        }
+
+        /* ===== TOP BAR ===== */
+        .top-bar {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+            display: grid;
+            grid-template-columns: 180px 1fr 400px 1fr 150px;
+            align-items: center;
+            padding: 0 20px;
+            gap: 20px;
+        }
+
+        .logo {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--bullish);
+            letter-spacing: 2px;
+            white-space: nowrap;
+        }
+
+        .search-container {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .search-input {
+            flex: 1;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            border-radius: 2px;
+        }
+
+        .search-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: var(--bullish);
+            background: rgba(0,255,136,0.05);
+        }
+
+        .search-btn {
+            padding: 6px 10px;
+            background: rgba(0,255,136,0.1);
+            border: 1px solid var(--bullish);
+            color: var(--bullish);
+            cursor: pointer;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            border-radius: 2px;
+            transition: all 0.2s;
+        }
+
+        .search-btn:hover {
+            background: rgba(0,255,136,0.2);
+        }
+
+        .status-group {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            font-size: 10px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--bearish);
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.online {
+            background: var(--bullish);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
+
+        .status-label {
+            color: var(--text-secondary);
+        }
+
+        .clock {
+            text-align: right;
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .scanner-label {
+            text-align: right;
+            font-size: 10px;
+            color: var(--fire);
+            animation: scanning 1.5s infinite;
+        }
+
+        @keyframes scanning {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
+
+        /* ===== MAIN CONTENT ===== */
+        .content {
+            display: grid;
+            grid-template-columns: 40% 60%;
+            gap: 0;
+            overflow: hidden;
+        }
+
+        /* LEFT PANEL - SCANNER */
+        .left-panel {
+            display: grid;
+            grid-template-rows: 40px 1fr;
+            border-right: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .scanner-header {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 15px;
+            font-size: 11px;
+        }
+
+        .scanner-title {
+            color: var(--bullish);
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        .scanner-stats {
+            display: flex;
+            gap: 20px;
+            color: var(--text-secondary);
+        }
+
+        .stat-item {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .stat-label {
+            font-size: 9px;
+        }
+
+        .stat-value {
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .scanner-table {
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        .scanner-row {
+            display: grid;
+            grid-template-columns: 70px 80px 45px 55px 70px 60px;
+            gap: 10px;
+            padding: 8px 15px;
+            border-bottom: 1px solid var(--border);
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 11px;
+        }
+
+        .scanner-row:hover {
+            background: rgba(0,255,136,0.05);
+        }
+
+        .scanner-row.high-score {
+            animation: pulseGold 2s infinite;
+        }
+
+        @keyframes pulseGold {
+            0%, 100% { box-shadow: inset 0 0 0 rgba(255,215,0,0.1); }
+            50% { box-shadow: inset 0 0 10px rgba(255,215,0,0.3); }
+        }
+
+        .row-symbol {
+            font-weight: 700;
+            color: var(--bullish);
+            font-size: 12px;
+        }
+
+        .row-price {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .row-direction {
+            text-align: center;
+            font-weight: 700;
+            padding: 2px 4px;
+            border-radius: 2px;
+        }
+
+        .row-direction.long {
+            color: var(--bullish);
+            background: rgba(0,255,136,0.15);
+        }
+
+        .row-direction.short {
+            color: var(--bearish);
+            background: rgba(255,51,85,0.15);
+        }
+
+        .row-score {
+            text-align: center;
+            font-weight: 700;
+            color: var(--fire);
+        }
+
+        .row-confluences {
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        .row-time {
+            text-align: right;
+            color: var(--text-secondary);
+            font-size: 10px;
+        }
+
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-secondary);
+            text-align: center;
+            font-size: 12px;
+            gap: 10px;
+        }
+
+        /* RIGHT PANEL - DETAIL */
+        .right-panel {
+            display: grid;
+            grid-template-rows: auto 1fr;
+            overflow: hidden;
+            background: var(--bg-primary);
+        }
+
+        .detail-header {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+            padding: 15px;
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 15px;
+            align-items: start;
+        }
+
+        .price-section {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .symbol-name {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .price-display {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--bullish);
+        }
+
+        .price-change {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .direction-badge {
+            padding: 4px 12px;
+            border-radius: 2px;
+            font-weight: 700;
+            font-size: 11px;
+            text-align: center;
+            width: 80px;
+        }
+
+        .direction-badge.long {
+            background: rgba(0,255,136,0.2);
+            color: var(--bullish);
+        }
+
+        .direction-badge.short {
+            background: rgba(255,51,85,0.2);
+            color: var(--bearish);
+        }
+
+        .gauge-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .gauge-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+        }
+
+        #scoreGauge {
+            max-width: 80px !important;
+            max-height: 80px !important;
+        }
+
+        .detail-content {
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .detail-section {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 12px;
+        }
+
+        .section-title {
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--fire);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 8px;
+        }
+
+        .trade-card {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 11px;
+        }
+
+        .trade-item {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .trade-label {
+            color: var(--text-secondary);
+            font-size: 9px;
+        }
+
+        .trade-value {
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .price-ladder {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 8px;
+            margin-top: 8px;
+        }
+
+        .ladder-level {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px;
+            font-size: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .ladder-level:last-child {
+            border-bottom: none;
+        }
+
+        .ladder-label {
+            color: var(--text-secondary);
+        }
+
+        .ladder-price {
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .options-table {
+            width: 100%;
+            font-size: 10px;
+            border-collapse: collapse;
+        }
+
+        .options-table td {
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .options-table td:first-child {
+            color: var(--text-secondary);
+        }
+
+        .options-table td:last-child {
+            text-align: right;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .confluence-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 11px;
+        }
+
+        .confluence-row:last-child {
+            border-bottom: none;
+        }
+
+        .confluence-name {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 1;
+        }
+
+        .confluence-icon {
+            font-size: 10px;
+        }
+
+        .confluence-active {
+            color: var(--bullish);
+        }
+
+        .confluence-inactive {
+            opacity: 0.4;
+        }
+
+        .confluence-bar {
+            flex: 0 0 100px;
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .confluence-bar-fill {
+            height: 100%;
+            background: var(--bullish);
+            transition: width 0.3s ease;
+        }
+
+        /* ===== BOTTOM STRIP ===== */
+        .bottom-strip {
+            background: var(--bg-panel);
+            border-top: 1px solid var(--border);
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            padding: 0 15px;
+            font-size: 10px;
+            gap: 20px;
+            overflow: hidden;
+        }
+
+        .signal-tape {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            overflow: hidden;
+            flex: 1;
+        }
+
+        .tape-label {
+            color: var(--text-secondary);
+            white-space: nowrap;
+            font-weight: 700;
+        }
+
+        .tape-scroll {
+            display: flex;
+            gap: 15px;
+            animation: tapescroll 20s linear infinite;
+            padding-right: 100%;
+        }
+
+        @keyframes tapescroll {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+
+        .signal-item {
+            display: flex;
+            gap: 12px;
+            white-space: nowrap;
+            padding: 2px 8px;
+            background: rgba(0,255,136,0.05);
+            border-radius: 2px;
+            border-left: 2px solid var(--bullish);
+        }
+
+        .signal-item.bearish {
+            background: rgba(255,51,85,0.05);
+            border-left-color: var(--bearish);
+        }
+
+        .tape-symbol {
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .tape-direction {
+            font-weight: 700;
+        }
+
+        .tape-direction.bull {
+            color: var(--bullish);
+        }
+
+        .tape-direction.bear {
+            color: var(--bearish);
+        }
+
+        .learning-stats {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .stat-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .stat-box-label {
+            font-size: 9px;
+        }
+
+        .stat-box-value {
+            font-weight: 700;
+            color: var(--text-primary);
+            font-size: 11px;
+        }
+
+        /* SCROLLBARS */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+
+        /* ANIMATIONS */
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes flashGreen {
+            0% {
+                background: rgba(0,255,136,0.3);
+            }
+            100% {
+                background: transparent;
+            }
+        }
+
+        @keyframes flashRed {
+            0% {
+                background: rgba(255,51,85,0.3);
+            }
+            100% {
+                background: transparent;
+            }
+        }
+
+        .flash-number {
+            animation: flashGreen 0.4s ease-out;
+        }
+
+        .flash-number.bearish {
+            animation: flashRed 0.4s ease-out;
+        }
+
+        .new-row {
+            animation: slideIn 0.5s ease-out;
+        }
+
+        /* RESPONSIVE */
+        @media (max-width: 1024px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+
+            .left-panel {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- TOP BAR -->
+        <div class="top-bar">
+            <div class="logo">⬤ ORDER FLOW RADAR</div>
+
+            <div class="search-container">
+                <input type="text" class="search-input" id="searchInput" placeholder="Search ticker...">
+                <button class="search-btn" id="searchBtn">SEARCH</button>
+            </div>
+
+            <div class="status-group">
+                <div class="status-item">
+                    <div class="status-dot online" id="alpacaStatus"></div>
+                    <span class="status-label">Alpaca</span>
+                </div>
+                <div class="status-item">
+                    <div class="status-dot online" id="polygonStatus"></div>
+                    <span class="status-label">Polygon</span>
+                </div>
+                <div class="status-item">
+                    <div class="status-dot online" id="avStatus"></div>
+                    <span class="status-label">AV</span>
+                </div>
+            </div>
+
+            <div class="scanner-label" id="scannerLabel">SCANNING...</div>
+
+            <div class="clock" id="clock">--:--:--</div>
+        </div>
+
+        <!-- MAIN CONTENT -->
+        <div class="content">
+            <!-- LEFT: SCANNER TABLE -->
+            <div class="left-panel">
+                <div class="scanner-header">
+                    <div class="scanner-title">⚡ LIVE SETUPS</div>
+                    <div class="scanner-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">SCANNING</span>
+                            <span class="stat-value" id="scanCount">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">QUALIFIED</span>
+                            <span class="stat-value" id="qualifiedCount">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">UPDATED</span>
+                            <span class="stat-value" id="lastUpdate">--:--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="scanner-table" id="scannerTable">
+                    <div class="empty-state">
+                        <div>⏳ Initializing scanner...</div>
+                        <div style="font-size: 10px;">Connecting to live data stream</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT: DETAIL VIEW -->
+            <div class="right-panel">
+                <div class="detail-header" id="detailHeader" style="display: none;">
+                    <div class="price-section">
+                        <div class="symbol-name" id="detailSymbol">--</div>
+                        <div class="price-display" id="detailPrice">$--</div>
+                        <div class="price-change" id="detailChange">+0.00%</div>
+                    </div>
+                    <div>
+                        <div class="direction-badge" id="directionBadge">LONG</div>
+                    </div>
+                    <div class="gauge-container">
+                        <div class="gauge-label">SCORE</div>
+                        <canvas id="scoreGauge" width="80" height="80"></canvas>
+                    </div>
+                </div>
+
+                <div class="detail-content" id="detailContent">
+                    <div class="empty-state">
+                        <div>👈 Select a setup to analyze</div>
+                        <div style="font-size: 10px;">or search for a ticker</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- BOTTOM STRIP -->
+        <div class="bottom-strip">
+            <div class="signal-tape">
+                <div class="tape-label">SIGNALS</div>
+                <div class="tape-scroll" id="tapeScroll"></div>
+            </div>
+            <div class="learning-stats">
+                <div class="stat-box">
+                    <div class="stat-box-label">WIN RATE</div>
+                    <div class="stat-box-value" id="winRate">--</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-box-label">TOTAL</div>
+                    <div class="stat-box-value" id="totalSignals">0</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-box-label">WEIGHT CHG</div>
+                    <div class="stat-box-value" id="weightChange">0</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== CONFIG =====
+        const API_BASE = `http://${window.location.hostname}:8080/api`;
+        const WS_URL = `ws://${window.location.hostname}:8080/ws`;
+
+        // ===== STATE =====
+        let scannerData = [];
+        let selectedSymbol = null;
+        let scoreChart = null;
+        let wsConnected = false;
+
+        // ===== CLOCK =====
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', {
+                hour: '2-digit', minute: '2-digit', second: '2-digit'
+            });
+        }
+        updateClock();
+        setInterval(updateClock, 1000);
+
+        // ===== WEBSOCKET =====
+        let ws;
+        function connectWebSocket() {
+            try {
+                ws = new WebSocket(WS_URL);
+                ws.onopen = () => {
+                    console.log('WebSocket connected');
+                    wsConnected = true;
+                };
+                ws.onmessage = (event) => {
+                    const signal = JSON.parse(event.data);
+                    handleNewSignal(signal);
+                };
+                ws.onclose = () => {
+                    wsConnected = false;
+                    console.log('WebSocket disconnected, reconnecting...');
+                    setTimeout(connectWebSocket, 3000);
+                };
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+            } catch (e) {
+                console.error('WebSocket connection failed:', e);
+                setTimeout(connectWebSocket, 3000);
+            }
+        }
+        connectWebSocket();
+
+        // ===== SIGNAL HANDLING =====
+        function handleNewSignal(signal) {
+            console.log('New signal:', signal);
+
+            // Flash the screen
+            document.body.style.borderTop = `3px solid ${signal.direction === 'LONG' ? '#00ff88' : '#ff3355'}`;
+            setTimeout(() => {
+                document.body.style.borderTop = 'none';
+            }, 200);
+
+            // Add to scanner table (if not already there)
+            updateScannerFromSignal(signal);
+
+            // Add to signal tape
+            addSignalToTape(signal);
+
+            // Play sound (optional)
+            playNotificationSound();
+        }
+
+        function playNotificationSound() {
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+
+                oscillator.frequency.value = 800;
+                oscillator.type = 'sine';
+
+                gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.1);
+            } catch (e) {
+                // Audio context not available
+            }
+        }
+
+        function addSignalToTape(signal) {
+            const tape = document.getElementById('tapeScroll');
+            const isBullish = signal.direction === 'LONG';
+            const item = document.createElement('div');
+            item.className = `signal-item ${!isBullish ? 'bearish' : ''}`;
+            item.innerHTML = `
+                <span class="tape-symbol">${signal.symbol}</span>
+                <span class="tape-direction ${isBullish ? 'bull' : 'bear'}">${isBullish ? '↑' : '↓'}</span>
+                <span>${signal.score?.toFixed(1) || '--'}</span>
+            `;
+            tape.insertBefore(item, tape.firstChild);
+
+            // Keep only last 30 signals
+            while (tape.children.length > 30) {
+                tape.removeChild(tape.lastChild);
+            }
+        }
+
+        // ===== POLLING: SCANNER DATA =====
+        async function pollScanner() {
+            try {
+                const response = await fetch(`${API_BASE}/scan`);
+                if (!response.ok) throw new Error(`API error: ${response.status}`);
+
+                const data = await response.json();
+                if (data && data.results) {
+                    scannerData = data.results;
+                    renderScannerTable(data.results);
+                    document.getElementById('scanCount').textContent = data.total_universe || scannerData.length;
+                    document.getElementById('qualifiedCount').textContent = data.results.length;
+
+                    const now = new Date();
+                    document.getElementById('lastUpdate').textContent = now.toLocaleTimeString('en-US', {
+                        hour: '2-digit', minute: '2-digit'
+                    });
+                }
+            } catch (e) {
+                console.error('Scanner polling error:', e);
+            }
+        }
+
+        function updateScannerFromSignal(signal) {
+            // Find and update or add signal to scannerData
+            const idx = scannerData.findIndex(s => s.symbol === signal.symbol);
+            if (idx >= 0) {
+                scannerData[idx] = { ...scannerData[idx], ...signal };
+            } else {
+                scannerData.unshift(signal);
+            }
+            // Keep top 50
+            scannerData = scannerData.slice(0, 50);
+            renderScannerTable(scannerData);
+        }
+
+        function renderScannerTable(data) {
+            const table = document.getElementById('scannerTable');
+
+            if (!data || data.length === 0) {
+                table.innerHTML = '<div class="empty-state"><div>⏳ Waiting for signals...</div></div>';
+                return;
+            }
+
+            // Sort by score descending
+            const sorted = [...data].sort((a, b) => (b.score || 0) - (a.score || 0));
+
+            table.innerHTML = sorted.map((row, idx) => {
+                const isHighScore = (row.score || 0) >= 9;
+                return `
+                    <div class="scanner-row ${isHighScore ? 'high-score' : ''} new-row" data-symbol="${row.symbol}">
+                        <div class="row-symbol">${row.symbol}</div>
+                        <div class="row-price">$${(row.price || 0).toFixed(2)}</div>
+                        <div class="row-direction ${(row.direction || 'LONG').toLowerCase()}">${row.direction === 'LONG' ? '↑' : '↓'}</div>
+                        <div class="row-score">${(row.score || 0).toFixed(1)}</div>
+                        <div class="row-confluences">${row.confluences || 0}x</div>
+                        <div class="row-time">${new Date(row.timestamp || Date.now()).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</div>
+                    </div>
+                `;
+            }).join('');
+
+            // Add click handlers
+            document.querySelectorAll('.scanner-row').forEach(row => {
+                row.addEventListener('click', () => {
+                    const sym = row.dataset.symbol;
+                    loadDetailView(sym);
+                });
+            });
+        }
+
+        // ===== DETAIL VIEW =====
+        async function loadDetailView(symbol) {
+            selectedSymbol = symbol;
+            document.getElementById('detailHeader').style.display = 'grid';
+
+            try {
+                const response = await fetch(`${API_BASE}/analyze/${symbol}`);
+                if (!response.ok) throw new Error(`API error: ${response.status}`);
+
+                const analysis = await response.json();
+                renderDetailView(symbol, analysis);
+            } catch (e) {
+                console.error('Detail load error:', e);
+                document.getElementById('detailContent').innerHTML = `<div class="empty-state"><div>Error loading data</div></div>`;
+            }
+        }
+
+        function renderDetailView(symbol, analysis) {
+            const data = analysis.analysis || {};
+            const price = data.current_price || 0;
+            const change = data.change_percent || 0;
+            const direction = data.direction || 'LONG';
+            const score = data.score || 0;
+            const confluences = data.confluences || [];
+
+            // Header
+            document.getElementById('detailSymbol').textContent = symbol;
+            document.getElementById('detailPrice').innerHTML = `$${price.toFixed(2)}`;
+            document.getElementById('detailChange').textContent = `${change > 0 ? '+' : ''}${change.toFixed(2)}%`;
+
+            const badge = document.getElementById('directionBadge');
+            badge.textContent = direction;
+            badge.className = `direction-badge ${direction.toLowerCase()}`;
+
+            // Score gauge
+            if (scoreChart) {
+                scoreChart.destroy();
+            }
+            const ctx = document.getElementById('scoreGauge').getContext('2d');
+            scoreChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Score', ''],
+                    datasets: [{
+                        data: [Math.min(score, 10), Math.max(0, 10 - score)],
+                        backgroundColor: [score >= 7 ? '#00ff88' : score >= 5 ? '#ffd700' : '#ff3355', 'rgba(255,255,255,0.1)'],
+                        borderColor: ['transparent', 'transparent'],
+                        borderWidth: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: { legend: { display: false } },
+                    cutout: '75%',
+                }
+            });
+
+            // Trade card
+            const entry = data.entry_price || price;
+            const stopLoss = data.stop_loss || (direction === 'LONG' ? price * 0.95 : price * 1.05);
+            const tp1 = data.tp1 || (direction === 'LONG' ? price * 1.05 : price * 0.95);
+            const tp2 = data.tp2 || (direction === 'LONG' ? price * 1.10 : price * 0.90);
+
+            // Content
+            let html = `
+                <div class="detail-section">
+                    <div class="section-title">Trade Setup</div>
+                    <div class="trade-card">
+                        <div class="trade-item">
+                            <div class="trade-label">ENTRY</div>
+                            <div class="trade-value">$${entry.toFixed(2)}</div>
+                        </div>
+                        <div class="trade-item">
+                            <div class="trade-label">STOP LOSS</div>
+                            <div class="trade-value">$${stopLoss.toFixed(2)}</div>
+                        </div>
+                        <div class="trade-item">
+                            <div class="trade-label">TP 1</div>
+                            <div class="trade-value">$${tp1.toFixed(2)}</div>
+                        </div>
+                        <div class="trade-item">
+                            <div class="trade-label">TP 2</div>
+                            <div class="trade-value">$${tp2.toFixed(2)}</div>
+                        </div>
+                    </div>
+                    <div class="price-ladder">
+                        <div class="ladder-level">
+                            <span class="ladder-label">TP2</span>
+                            <span class="ladder-price">$${tp2.toFixed(2)}</span>
+                        </div>
+                        <div class="ladder-level">
+                            <span class="ladder-label">TP1</span>
+                            <span class="ladder-price">$${tp1.toFixed(2)}</span>
+                        </div>
+                        <div class="ladder-level" style="background: rgba(0,255,136,0.1);">
+                            <span class="ladder-label">ENTRY</span>
+                            <span class="ladder-price">$${entry.toFixed(2)}</span>
+                        </div>
+                        <div class="ladder-level">
+                            <span class="ladder-label">STOP</span>
+                            <span class="ladder-price">$${stopLoss.toFixed(2)}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Options section
+            if (data.options) {
+                const opt = data.options[0] || {};
+                html += `
+                    <div class="detail-section">
+                        <div class="section-title">Options Recommendation</div>
+                        <div style="font-size: 11px; margin-bottom: 8px;">
+                            <strong>${symbol} ${opt.expiry || '04/18'} ${opt.strike || '--'} ${opt.type || 'CALL'}</strong>
+                        </div>
+                        <table class="options-table">
+                            <tr><td>Strike</td><td>${opt.strike || '--'}</td></tr>
+                            <tr><td>Premium</td><td>$${(opt.premium || 0).toFixed(2)}</td></tr>
+                            <tr><td>Delta</td><td>${(opt.delta || 0).toFixed(2)}</td></tr>
+                            <tr><td>Theta</td><td>${(opt.theta || 0).toFixed(3)}</td></tr>
+                            <tr><td>Volume/OI</td><td>${opt.volume_oi_ratio?.toFixed(2) || '--'}</td></tr>
+                        </table>
+                    </div>
+                `;
+            }
+
+            // Confluences
+            if (confluences.length > 0) {
+                html += `
+                    <div class="detail-section">
+                        <div class="section-title">Confluence Factors</div>
+                        ${confluences.map(c => `
+                            <div class="confluence-row">
+                                <div class="confluence-name ${c.active ? 'confluence-active' : 'confluence-inactive'}">
+                                    <span class="confluence-icon">${c.active ? '✓' : '○'}</span>
+                                    <span>${c.name || 'Unknown'}</span>
+                                </div>
+                                <div class="confluence-bar">
+                                    <div class="confluence-bar-fill" style="width: ${(c.points || 0) / 10 * 100}%"></div>
+                                </div>
+                                <span style="color: var(--text-secondary); font-size: 10px;">${(c.points || 0).toFixed(1)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            document.getElementById('detailContent').innerHTML = html;
+        }
+
+        // ===== SEARCH =====
+        document.getElementById('searchBtn').addEventListener('click', () => {
+            const input = document.getElementById('searchInput');
+            if (input.value.trim()) {
+                loadDetailView(input.value.toUpperCase());
+            }
+        });
+
+        document.getElementById('searchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const input = e.target;
+                if (input.value.trim()) {
+                    loadDetailView(input.value.toUpperCase());
+                }
+            }
+        });
+
+        // ===== POLLING: PERFORMANCE & WEIGHTS =====
+        async function pollPerformance() {
+            try {
+                const response = await fetch(`${API_BASE}/learner/performance`);
+                if (!response.ok) return;
+
+                const data = await response.json();
+                const perf = data.performance || {};
+
+                document.getElementById('totalSignals').textContent = perf.total_signals || 0;
+
+                const winRate = perf.win_rate || 0;
+                document.getElementById('winRate').textContent = `${(winRate * 100).toFixed(0)}%`;
+            } catch (e) {
+                console.error('Performance polling error:', e);
+            }
+        }
+
+        async function pollWeights() {
+            try {
+                const response = await fetch(`${API_BASE}/learner/weights`);
+                if (!response.ok) return;
+
+                const data = await response.json();
+                const weights = data.weights || {};
+
+                const maxWeight = Math.max(...Object.values(weights));
+                const count = Object.keys(weights).length;
+
+                document.getElementById('weightChange').textContent = `+${count}`;
+            } catch (e) {
+                console.error('Weights polling error:', e);
+            }
+        }
+
+        // ===== INITIAL LOAD & INTERVALS =====
+        pollScanner();
+        pollPerformance();
+        pollWeights();
+
+        setInterval(pollScanner, 15000);      // Every 15 seconds
+        setInterval(pollPerformance, 30000);  // Every 30 seconds
+        setInterval(pollWeights, 60000);      // Every 60 seconds
+
+        // Status indicators (mock)
+        const statusDots = ['alpacaStatus', 'polygonStatus', 'avStatus'];
+        statusDots.forEach(dotId => {
+            const dot = document.getElementById(dotId);
+            setInterval(() => {
+                dot.classList.toggle('online', Math.random() > 0.1);
+            }, 5000);
+        });
+    </script>
+</body>
+</html>

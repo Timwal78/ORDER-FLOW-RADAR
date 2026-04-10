@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Flow Radar — Trading Signal Engine</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap');
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #000;
+            color: #fff;
+            min-height: 100vh;
+        }
+
+        /* === HERO === */
+        .hero {
+            position: relative;
+            padding: 60px 40px 50px;
+            text-align: center;
+            background: radial-gradient(ellipse at top, #0a1a0a 0%, #000 70%);
+            border-bottom: 1px solid #00ff8820;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -200px; left: 50%; transform: translateX(-50%);
+            width: 600px; height: 600px;
+            background: radial-gradient(circle, #00ff8810 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 18px;
+            border: 1px solid #00ff88;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #00ff88;
+            margin-bottom: 20px;
+        }
+
+        .hero h1 {
+            font-size: 56px;
+            font-weight: 900;
+            letter-spacing: -1px;
+            line-height: 1.05;
+            margin-bottom: 10px;
+        }
+        .hero h1 span { color: #00ff88; }
+
+        .hero .subtitle {
+            font-size: 20px;
+            color: #888;
+            font-weight: 300;
+            max-width: 650px;
+            margin: 0 auto 30px;
+            line-height: 1.5;
+        }
+
+        .hero-stats {
+            display: flex;
+            justify-content: center;
+            gap: 50px;
+            margin-top: 30px;
+        }
+        .hero-stat {
+            text-align: center;
+        }
+        .hero-stat .number {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 36px;
+            font-weight: 700;
+            color: #00ff88;
+        }
+        .hero-stat .label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 4px;
+        }
+
+        /* === SIGNAL PREVIEW === */
+        .signal-preview {
+            max-width: 420px;
+            margin: 40px auto 0;
+            background: #111;
+            border: 1px solid #222;
+            border-left: 4px solid #00ff88;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: left;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+        }
+        .signal-preview .sig-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .sig-title { font-weight: 700; font-size: 16px; color: #00ff88; }
+        .sig-score {
+            background: #00ff8820;
+            color: #00ff88;
+            padding: 3px 10px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 12px;
+        }
+        .sig-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            color: #aaa;
+        }
+        .sig-row .val { color: #fff; font-weight: 600; }
+        .sig-row .green { color: #00ff88; }
+        .sig-row .red { color: #ff3355; }
+        .sig-divider {
+            border-top: 1px solid #222;
+            margin: 10px 0;
+        }
+        .sig-confluences {
+            font-size: 11px;
+            color: #666;
+            line-height: 1.8;
+        }
+        .sig-confluences span { color: #00ff88; }
+
+        /* === SECTION === */
+        .section {
+            padding: 60px 40px;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        .section-label {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #00ff88;
+            margin-bottom: 10px;
+        }
+        .section h2 {
+            font-size: 36px;
+            font-weight: 800;
+            margin-bottom: 10px;
+        }
+        .section .section-sub {
+            font-size: 16px;
+            color: #777;
+            margin-bottom: 40px;
+            max-width: 600px;
+        }
+
+        /* === INDICATORS GRID === */
+        .indicators-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+        .indicator-card {
+            background: #0a0a0a;
+            border: 1px solid #1a1a1a;
+            border-radius: 10px;
+            padding: 22px;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        .indicator-card:hover {
+            border-color: #00ff8840;
+            transform: translateY(-2px);
+        }
+        .indicator-num {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        .indicator-name {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+        .indicator-desc {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.5;
+        }
+        .indicator-tag {
+            display: inline-block;
+            margin-top: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            padding: 3px 8px;
+            border-radius: 3px;
+        }
+        .tag-orderflow { background: #00ff8815; color: #00ff88; }
+        .tag-momentum { background: #3388ff15; color: #3388ff; }
+        .tag-volume { background: #ff880015; color: #ff8800; }
+        .tag-trend { background: #aa55ff15; color: #aa55ff; }
+        .tag-structure { background: #ff335515; color: #ff3355; }
+        .tag-options { background: #ffd70015; color: #ffd700; }
+
+        /* === MODULES === */
+        .modules-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+        .module-card {
+            background: linear-gradient(135deg, #0a0a0a 0%, #0f0f0f 100%);
+            border: 1px solid #1a1a1a;
+            border-radius: 12px;
+            padding: 28px;
+        }
+        .module-icon {
+            font-size: 28px;
+            margin-bottom: 14px;
+        }
+        .module-name {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .module-desc {
+            font-size: 13px;
+            color: #777;
+            line-height: 1.6;
+        }
+
+        /* === OPTIONS REC PREVIEW === */
+        .options-preview {
+            max-width: 480px;
+            margin: 30px auto 0;
+            background: #0a0a0a;
+            border: 1px solid #ffd70030;
+            border-left: 4px solid #ffd700;
+            border-radius: 8px;
+            padding: 20px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+        }
+        .opt-header {
+            font-weight: 700;
+            font-size: 14px;
+            color: #ffd700;
+            margin-bottom: 12px;
+        }
+        .opt-contract {
+            font-size: 18px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 10px;
+        }
+        .opt-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+            color: #888;
+        }
+        .opt-row .val { color: #ffd700; font-weight: 600; }
+
+        /* === PRICING === */
+        .pricing-section {
+            background: linear-gradient(180deg, #000 0%, #050a05 100%);
+            padding: 60px 40px;
+            text-align: center;
+        }
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        .price-card {
+            background: #0a0a0a;
+            border: 1px solid #1a1a1a;
+            border-radius: 14px;
+            padding: 30px 24px;
+            text-align: left;
+            position: relative;
+        }
+        .price-card.featured {
+            border-color: #00ff8860;
+            background: linear-gradient(135deg, #0a1a0a 0%, #0a0a0a 100%);
+        }
+        .price-card.featured::after {
+            content: 'MOST POPULAR';
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #00ff88;
+            color: #000;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 4px 14px;
+            border-radius: 10px;
+        }
+        .price-tier {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #666;
+            margin-bottom: 6px;
+        }
+        .price-amount {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 40px;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+        .price-amount .dollar { font-size: 22px; color: #888; vertical-align: top; }
+        .price-amount .period { font-size: 14px; color: #444; font-weight: 400; }
+        .price-card.featured .price-amount { color: #00ff88; }
+        .price-desc {
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 20px;
+            line-height: 1.4;
+        }
+        .price-features {
+            list-style: none;
+            padding: 0;
+        }
+        .price-features li {
+            font-size: 13px;
+            color: #aaa;
+            padding: 6px 0;
+            border-bottom: 1px solid #111;
+        }
+        .price-features li::before {
+            content: '';
+            display: inline-block;
+            width: 6px; height: 6px;
+            background: #00ff88;
+            border-radius: 50%;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        .price-features li.disabled { color: #333; }
+        .price-features li.disabled::before { background: #222; }
+
+        .price-btn {
+            display: block;
+            width: 100%;
+            margin-top: 20px;
+            padding: 12px;
+            text-align: center;
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            border-radius: 8px;
+            text-decoration: none;
+            cursor: pointer;
+            border: none;
+            transition: transform 0.15s;
+        }
+        .price-btn:hover { transform: scale(1.02); }
+        .price-btn.primary {
+            background: #00ff88;
+            color: #000;
+        }
+        .price-btn.secondary {
+            background: #1a1a1a;
+            color: #aaa;
+            border: 1px solid #222;
+        }
+        .price-btn.gold {
+            background: linear-gradient(135deg, #ffd700, #ffaa00);
+            color: #000;
+        }
+
+        /* === FOOTER === */
+        .footer {
+            padding: 30px 40px;
+            text-align: center;
+            border-top: 1px solid #111;
+        }
+        .footer p {
+            font-size: 12px;
+            color: #333;
+        }
+
+        /* === HOW IT WORKS === */
+        .how-steps {
+            display: flex;
+            gap: 30px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .how-step {
+            flex: 1;
+            min-width: 200px;
+            max-width: 250px;
+            text-align: center;
+            padding: 20px;
+        }
+        .step-num {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 40px;
+            font-weight: 800;
+            color: #00ff8830;
+            margin-bottom: 10px;
+        }
+        .step-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .step-desc {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.5;
+        }
+
+        /* === RESPONSIVE === */
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 36px; }
+            .hero-stats { flex-direction: column; gap: 20px; }
+            .indicators-grid { grid-template-columns: 1fr; }
+            .modules-grid { grid-template-columns: 1fr; }
+            .pricing-grid { grid-template-columns: 1fr; }
+            .how-steps { flex-direction: column; align-items: center; }
+        }
+
+        @media print {
+            body { background: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .hero, .section, .pricing-section { break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+    <div class="badge">AI-Powered Trading Signals</div>
+    <h1>Order Flow <span>Radar</span></h1>
+    <p class="subtitle">
+        15 confluence indicators. 5 data sources. 1 clear signal.<br>
+        The system scans the entire market and tells you exactly what to buy or sell.
+    </p>
+
+    <div class="hero-stats">
+        <div class="hero-stat">
+            <div class="number">15</div>
+            <div class="label">Indicators</div>
+        </div>
+        <div class="hero-stat">
+            <div class="number">5</div>
+            <div class="label">Live Data Feeds</div>
+        </div>
+        <div class="hero-stat">
+            <div class="number">24/7</div>
+            <div class="label">Scanning</div>
+        </div>
+        <div class="hero-stat">
+            <div class="number">AI</div>
+            <div class="label">Learning Engine</div>
+        </div>
+    </div>
+
+    <!-- Signal Preview -->
+    <div class="signal-preview">
+        <div class="sig-header">
+            <span class="sig-title">LONG NVDA</span>
+            <span class="sig-score">8.2 / 10 GO</span>
+        </div>
+        <div class="sig-row"><span>Entry</span><span class="val green">$138.50</span></div>
+        <div class="sig-row"><span>Stop Loss</span><span class="val red">$135.20 (-2.38%)</span></div>
+        <div class="sig-row"><span>Target 1</span><span class="val green">$143.45 (1.5:1)</span></div>
+        <div class="sig-row"><span>Target 2</span><span class="val green">$147.75 (2.5:1)</span></div>
+        <div class="sig-divider"></div>
+        <div class="sig-confluences">
+            <span>&#10003;</span> OB Imbalance +18% bid heavy<br>
+            <span>&#10003;</span> RSI(14): 24.1 — oversold<br>
+            <span>&#10003;</span> VWAP: 2.3% below<br>
+            <span>&#10003;</span> EMA 9/21 bullish cross<br>
+            <span>&#10003;</span> Volume: 2.8x spike
+        </div>
+    </div>
+</div>
+
+<!-- HOW IT WORKS -->
+<div class="section" style="text-align: center;">
+    <div class="section-label">How It Works</div>
+    <h2>Your phone buzzes. You decide.</h2>
+    <p class="section-sub" style="margin: 0 auto 40px;">No charts to read. No indicators to interpret. The system does the analysis and sends you a trade card. You just press buy or skip.</p>
+
+    <div class="how-steps">
+        <div class="how-step">
+            <div class="step-num">01</div>
+            <div class="step-title">System Scans</div>
+            <div class="step-desc">Scans hundreds of stocks and crypto 24/7 across 5 data sources simultaneously</div>
+        </div>
+        <div class="how-step">
+            <div class="step-num">02</div>
+            <div class="step-title">Confluence Stacks</div>
+            <div class="step-desc">When 5+ indicators align on the same trade, the system generates a signal with entry, stop, and targets</div>
+        </div>
+        <div class="how-step">
+            <div class="step-num">03</div>
+            <div class="step-title">Phone Buzzes</div>
+            <div class="step-desc">Discord notification hits your phone with the full trade card. You decide: take it or skip it</div>
+        </div>
+        <div class="how-step">
+            <div class="step-num">04</div>
+            <div class="step-title">AI Learns</div>
+            <div class="step-desc">The system tracks every signal outcome and adjusts its scoring weights. It gets smarter over time</div>
+        </div>
+    </div>
+</div>
+
+<!-- 15 INDICATORS -->
+<div class="section">
+    <div class="section-label">The Engine</div>
+    <h2>15 Confluence Indicators</h2>
+    <p class="section-sub">No single indicator makes the call. The system stacks them together and only fires when enough agree.</p>
+
+    <div class="indicators-grid">
+        <div class="indicator-card">
+            <div class="indicator-num">01</div>
+            <div class="indicator-name">Order Book Imbalance</div>
+            <div class="indicator-desc">Real-time bid vs ask depth analysis. Detects buying or selling pressure before price moves.</div>
+            <span class="indicator-tag tag-orderflow">Order Flow</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">02</div>
+            <div class="indicator-name">Wall Detection</div>
+            <div class="indicator-desc">Identifies large resting orders in the book. Tracks persistence to filter real walls from spoofing.</div>
+            <span class="indicator-tag tag-orderflow">Order Flow</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">03</div>
+            <div class="indicator-name">Absorption Detection</div>
+            <div class="indicator-desc">Detects when a wall absorbs aggressive selling and holds. Strong walls = strong levels.</div>
+            <span class="indicator-tag tag-orderflow">Order Flow</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">04</div>
+            <div class="indicator-name">RSI Extremes</div>
+            <div class="indicator-desc">RSI(14) at 25/75 thresholds. Tighter than standard for higher-conviction reversal signals.</div>
+            <span class="indicator-tag tag-momentum">Momentum</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">05</div>
+            <div class="indicator-name">RSI Divergence</div>
+            <div class="indicator-desc">Price makes new low but RSI makes higher low. Hidden strength the chart doesn't show.</div>
+            <span class="indicator-tag tag-momentum">Momentum</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">06</div>
+            <div class="indicator-name">MACD Crossover</div>
+            <div class="indicator-desc">Signal line crosses confirm momentum shifts. Combined with histogram acceleration for timing.</div>
+            <span class="indicator-tag tag-momentum">Momentum</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">07</div>
+            <div class="indicator-name">MACD Acceleration</div>
+            <div class="indicator-desc">Histogram growing = momentum strengthening. Detects the rate of change in momentum itself.</div>
+            <span class="indicator-tag tag-momentum">Momentum</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">08</div>
+            <div class="indicator-name">VWAP Deviation</div>
+            <div class="indicator-desc">Price stretched 2%+ from VWAP signals mean reversion. Institutional anchor level for intraday.</div>
+            <span class="indicator-tag tag-momentum">Momentum</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">09</div>
+            <div class="indicator-name">Volume Spike</div>
+            <div class="indicator-desc">2.5x normal volume on a candle = institutional participation. Classified as buying or selling climax.</div>
+            <span class="indicator-tag tag-volume">Volume</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">10</div>
+            <div class="indicator-name">Cumulative Volume Delta</div>
+            <div class="indicator-desc">Running buy vs sell volume. Divergence from price reveals hidden accumulation or distribution.</div>
+            <span class="indicator-tag tag-volume">Volume</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">11</div>
+            <div class="indicator-name">EMA Crossover</div>
+            <div class="indicator-desc">EMA 9/21 fast cross with EMA 50 confirmation. Triple-layer trend verification.</div>
+            <span class="indicator-tag tag-trend">Trend</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">12</div>
+            <div class="indicator-name">Multi-Timeframe Alignment</div>
+            <div class="indicator-desc">5min, 1hr, daily trends all pointing the same way. Alignment = strongest setups.</div>
+            <span class="indicator-tag tag-trend">Trend</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">13</div>
+            <div class="indicator-name">Support / Resistance Zones</div>
+            <div class="indicator-desc">Automatically detects swing points, clusters them into zones, ranks by touch count.</div>
+            <span class="indicator-tag tag-structure">Structure</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">14</div>
+            <div class="indicator-name">Options Unusual Activity</div>
+            <div class="indicator-desc">Detects options volume >3x open interest. Smart money leaves footprints in the options chain.</div>
+            <span class="indicator-tag tag-options">Options</span>
+        </div>
+        <div class="indicator-card">
+            <div class="indicator-num">15</div>
+            <div class="indicator-name">Market Sentiment</div>
+            <div class="indicator-desc">News sentiment analysis + put/call ratio. Crowd positioning as a contrarian or confirming signal.</div>
+            <span class="indicator-tag tag-options">Sentiment</span>
+        </div>
+    </div>
+</div>
+
+<!-- MODULES -->
+<div class="section">
+    <div class="section-label">System Architecture</div>
+    <h2>6 Core Modules</h2>
+    <p class="section-sub">Built from the ground up. Real-time data. No delays. No fake signals.</p>
+
+    <div class="modules-grid">
+        <div class="module-card">
+            <div class="module-icon">&#9889;</div>
+            <div class="module-name">Market Scanner</div>
+            <div class="module-desc">Discovers the most active stocks and crypto automatically. Scans hundreds of symbols every minute. You don't pick tickers — the system finds the plays.</div>
+        </div>
+        <div class="module-card">
+            <div class="module-icon">&#128202;</div>
+            <div class="module-name">Confluence Engine</div>
+            <div class="module-desc">The brain. Stacks all 15 indicators, scores each setup 0-20, and only fires when 5+ factors align. Eliminates noise, surfaces signal.</div>
+        </div>
+        <div class="module-card">
+            <div class="module-icon">&#127919;</div>
+            <div class="module-name">Options Recommender</div>
+            <div class="module-desc">Recommends the exact contract: strike price, expiration, premium, Greeks, risk/reward. You know exactly what to buy.</div>
+        </div>
+        <div class="module-card">
+            <div class="module-icon">&#129504;</div>
+            <div class="module-name">Learning AI</div>
+            <div class="module-desc">Tracks every signal outcome. Adjusts indicator weights based on what actually wins. The system gets smarter every week.</div>
+        </div>
+        <div class="module-card">
+            <div class="module-icon">&#128242;</div>
+            <div class="module-name">Discord Alerts</div>
+            <div class="module-desc">Trade cards delivered straight to your phone. Entry, stop, targets, confluences, options play — everything you need in one notification.</div>
+        </div>
+        <div class="module-card">
+            <div class="module-icon">&#127760;</div>
+            <div class="module-name">Live Dashboard</div>
+            <div class="module-desc">Real-time streaming web dashboard. Search any symbol. Watch the scanner find setups. See every signal detail and AI learning stats.</div>
+        </div>
+    </div>
+</div>
+
+<!-- OPTIONS REC PREVIEW -->
+<div class="section" style="text-align: center;">
+    <div class="section-label">Premium Feature</div>
+    <h2>Options Recommendations</h2>
+    <p class="section-sub" style="margin: 0 auto 20px;">The system doesn't just say "buy NVDA." It tells you exactly which options contract to buy.</p>
+
+    <div class="options-preview" style="text-align: left;">
+        <div class="opt-header">RECOMMENDED OPTIONS PLAY</div>
+        <div class="opt-contract">NVDA 04/18 $140 CALL</div>
+        <div class="opt-row"><span>Premium</span><span class="val">$3.55</span></div>
+        <div class="opt-row"><span>Delta</span><span class="val">0.45</span></div>
+        <div class="opt-row"><span>DTE</span><span class="val">9 days</span></div>
+        <div class="opt-row"><span>Max Risk / Contract</span><span class="val">$355</span></div>
+        <div class="opt-row"><span>Est. Return at TP1</span><span class="val">$680 (1.9:1)</span></div>
+        <div class="opt-row"><span>Break-even</span><span class="val">$143.55</span></div>
+        <div class="opt-row"><span>Volume / OI</span><span class="val">12,500 / 8,200</span></div>
+        <div style="margin-top: 12px; font-size: 11px; color: #555;">
+            Alt 1: NVDA 04/25 $142 CALL ($2.80) &nbsp;|&nbsp; Alt 2: NVDA 04/18 $138 CALL ($4.90)
+        </div>
+    </div>
+</div>
+
+<!-- PRICING -->
+<div class="pricing-section">
+    <div class="section-label">Simple Pricing</div>
+    <h2 style="font-size: 36px; font-weight: 800; margin-bottom: 10px;">Start free. Upgrade when you're ready.</h2>
+    <p style="color: #666; margin-bottom: 40px; font-size: 15px;">No contracts. Cancel anytime.</p>
+
+    <div class="pricing-grid">
+        <!-- Free -->
+        <div class="price-card">
+            <div class="price-tier">Free</div>
+            <div class="price-amount"><span class="dollar">$</span>0<span class="period">/mo</span></div>
+            <div class="price-desc">Try it out. See what the system can do.</div>
+            <ul class="price-features">
+                <li>Market scanner (delayed 5 min)</li>
+                <li>10 symbol analyses / day</li>
+                <li>Basic confluence scores</li>
+                <li class="disabled">Real-time Discord alerts</li>
+                <li class="disabled">Options recommendations</li>
+                <li class="disabled">AI learning stats</li>
+            </ul>
+            <a class="price-btn secondary" href="#">Get Started Free</a>
+        </div>
+
+        <!-- Pro -->
+        <div class="price-card featured">
+            <div class="price-tier">Pro</div>
+            <div class="price-amount"><span class="dollar">$</span>9<span class="period">.99/mo</span></div>
+            <div class="price-desc">Real-time signals to your phone. The full engine.</div>
+            <ul class="price-features">
+                <li>Real-time market scanner</li>
+                <li>Unlimited symbol analyses</li>
+                <li>Full confluence breakdowns</li>
+                <li>Discord alerts with trade cards</li>
+                <li>AI learning engine access</li>
+                <li class="disabled">Options recommendations</li>
+            </ul>
+            <a class="price-btn primary" href="https://buy.stripe.com/14A14p4Rcbnp9hHafE6wE0J">Subscribe — $9.99/mo</a>
+            <div style="display:flex; justify-content:center; margin-top:16px;">
+                <div id="qr-pro" style="background:#fff; padding:6px; border-radius:6px; display:inline-block;"></div>
+            </div>
+            <div style="text-align:center; font-size:10px; color:#444; margin-top:6px;">Scan to subscribe</div>
+        </div>
+
+        <!-- Premium -->
+        <div class="price-card">
+            <div class="price-tier">Premium</div>
+            <div class="price-amount"><span class="dollar">$</span>19<span class="period">.99/mo</span></div>
+            <div class="price-desc">Everything + the system picks your options contracts.</div>
+            <ul class="price-features">
+                <li>Everything in Pro</li>
+                <li>Options recommendations</li>
+                <li>Strike, expiry, Greeks, R:R</li>
+                <li>Priority signal delivery</li>
+                <li>Premium Discord channel</li>
+                <li>Full AI performance stats</li>
+            </ul>
+            <a class="price-btn gold" href="https://buy.stripe.com/00wfZjdnIajl79zafE6wE0K">Subscribe — $19.99/mo</a>
+            <div style="display:flex; justify-content:center; margin-top:16px;">
+                <div id="qr-premium" style="background:#fff; padding:6px; border-radius:6px; display:inline-block;"></div>
+            </div>
+            <div style="text-align:center; font-size:10px; color:#444; margin-top:6px;">Scan to subscribe</div>
+        </div>
+    </div>
+</div>
+
+<!-- DATA SOURCES -->
+<div class="section" style="text-align: center;">
+    <div class="section-label">Powered By</div>
+    <div style="display: flex; justify-content: center; gap: 50px; flex-wrap: wrap; margin-top: 20px;">
+        <div style="text-align: center;">
+            <div style="font-size: 18px; font-weight: 700; color: #444;">Alpaca</div>
+            <div style="font-size: 11px; color: #333;">Real-time L2 Data</div>
+        </div>
+        <div style="text-align: center;">
+            <div style="font-size: 18px; font-weight: 700; color: #444;">Polygon</div>
+            <div style="font-size: 11px; color: #333;">Market Aggregates</div>
+        </div>
+        <div style="text-align: center;">
+            <div style="font-size: 18px; font-weight: 700; color: #444;">Alpha Vantage</div>
+            <div style="font-size: 11px; color: #333;">Technicals + Sentiment</div>
+        </div>
+        <div style="text-align: center;">
+            <div style="font-size: 18px; font-weight: 700; color: #444;">Schwab</div>
+            <div style="font-size: 11px; color: #333;">Options Chains</div>
+        </div>
+    </div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+    <p>Order Flow Radar &mdash; Signals are probabilistic, not financial advice. Past performance does not guarantee future results. Trade responsibly.</p>
+</div>
+
+<script>
+    // Generate QR codes for Stripe payment links
+    new QRCode(document.getElementById("qr-pro"), {
+        text: "https://buy.stripe.com/14A14p4Rcbnp9hHafE6wE0J",
+        width: 100,
+        height: 100,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.M
+    });
+    new QRCode(document.getElementById("qr-premium"), {
+        text: "https://buy.stripe.com/00wfZjdnIajl79zafE6wE0K",
+        width: 100,
+        height: 100,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.M
+    });
+</script>
+</body>
+</html>
