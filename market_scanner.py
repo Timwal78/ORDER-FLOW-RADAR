@@ -148,4 +148,4 @@ class MarketScanner:
     async def get_all_symbols(self) -> List[str]:
         """Get combined list of all discoverable symbols."""
         targets = await self.get_scan_targets()
-        return targe
+        return targets["equities"] + targets["crypto"]

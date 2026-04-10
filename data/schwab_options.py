@@ -28,20 +28,18 @@ class SchwabOptionsHandler:
         self.refresh_token = config.SCHWAB_REFRESH_TOKEN
         self.token_url = config.SCHWAB_TOKEN_URL
         self.base_url = config.SCHWAB_BASE
-        self.symbols = config.EQUITY_SYMBOLS
+        self.symbols = getattr(config, 'EQUITY_SYMBOLS', [])
         self.poll_seconds = config.SCHWAB_POLL_SECONDS
 
         # Token management
         self.access_token = None
         self.token_expiry_time = 0
 
-        # Data caches
-        self.options_chains: Dict[str, Dict] = {symbol: {} for symbol in self.symbols}
-        self.unusual_activity: Dict[str, List[Dict]] = {
-            symbol: [] for symbol in self.symbols
-        }
-        self.pcr_ratios: Dict[str, float] = {symbol: 0.0 for symbol in self.symbols}
-        self.options_flow: Dict[str, Dict] = {symbol: {} for symbol in self.symbols}
+        # Data caches (will be dynamically updated by orchestrator)
+        self.options_chains: Dict[str, Dict] = {}
+        self.unusual_activity: Dict[str, List[Dict]] = {}
+        self.pcr_ratios: Dict[str, float] = {}
+        self.options_flow: Dict[str, Dict] = {}
 
     async def start(self) -> None:
         """Start polling loop for options data (market hours only)."""
