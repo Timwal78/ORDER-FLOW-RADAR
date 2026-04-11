@@ -31,6 +31,7 @@ from modules.confluence_engine import ConfluenceEngine
 from modules.sweep_scanner import SweepScanner
 from modules.signal_journal import SignalJournal
 from modules.earnings_detector import EarningsDetector
+from modules.paper_portfolio import PaperPortfolio
 from modules.universe_scanner import UniverseScanner
 from modules.discord_alerter import DiscordAlerter
 from modules.dashboard import (
@@ -62,6 +63,7 @@ discord: DiscordAlerter
 sweep: SweepScanner
 journal: SignalJournal
 earnings: EarningsDetector
+paper: PaperPortfolio
 
 shutdown_event = asyncio.Event()
 
@@ -343,6 +345,23 @@ async def report_card_loop():
             await asyncio.sleep(300)
 
 
+async def paper_portfolio_loop():
+    """Send weekly paper portfolio summary to FREE tier (Sundays 6 PM)."""
+    while not shutdown_event.is_set():
+        try:
+            now = datetime.now()
+            # Sunday = 6, 6 PM
+            if now.weekday() == 6 and now.hour == 18 and 0 <= now.minute <= 1:
+                await paper.send_weekly_summary()
+                add_system_log("Weekly paper portfolio summary sent")
+                await asyncio.sleep(7200)  # Wait 2 hours
+            else:
+                await asyncio.sleep(60)
+        except Exception as e:
+            logger.error(f"Paper portfolio loop error: {e}")
+            await asyncio.sleep(300)
+
+
 async def dashboard_server():
     """Run FastAPI dashboard."""
     server_config = uvicorn.Config(
@@ -382,8 +401,9 @@ async def main():
     discord = DiscordAlerter(config.DISCORD_WEBHOOK_URL)
     journal = SignalJournal()
     earnings = EarningsDetector()
+    paper = PaperPortfolio(starting_balance=10000)
     sweep = SweepScanner(schwab, alpaca, polygon, discord,
-                         journal=journal, earnings=earnings)
+                         journal=journal, earnings=earnings, paper=paper)
 
     # Wire dashboard — pass all engines including discord
     set_engines(confluence, flow, universe, discord, alpaca)
@@ -424,6 +444,7 @@ async def main():
         asyncio.create_task(signal_eval_loop()),
         asyncio.create_task(sweep_scan_loop()),
         asyncio.create_task(report_card_loop()),
+        asyncio.create_task(paper_portfolio_loop()),
         asyncio.create_task(discord_heartbeat_loop()),
     ]
 

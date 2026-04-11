@@ -38,13 +38,14 @@ class SweepScanner:
     """Institutional sweep detection engine for Order-Flow-Radar."""
 
     def __init__(self, schwab_api, alpaca_api, polygon_api, discord_alerter,
-                 journal=None, earnings=None):
+                 journal=None, earnings=None, paper=None):
         self.schwab = schwab_api
         self.alpaca = alpaca_api
         self.polygon = polygon_api
         self.discord = discord_alerter
         self.journal = journal
         self.earnings = earnings
+        self.paper = paper
         self.last_scan_results = []
         self.scan_count = 0
         self._alert_count = 0  # Track for preview drops to free tier
@@ -107,6 +108,13 @@ class SweepScanner:
                         # Log to journal
                         if self.journal:
                             self.journal.log_signal(cl)
+
+                        # Auto-follow in paper portfolio (BUY signals only)
+                        if self.paper and cl["action"].startswith("BUY"):
+                            try:
+                                self.paper.open_position(cl)
+                            except Exception as e:
+                                logger.debug(f"Paper portfolio: {e}")
 
                         # Send to Discord (tiered)
                         await self._send_alert(cl)
