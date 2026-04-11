@@ -32,6 +32,11 @@ from data.alpaca_equities import AlpacaEquitiesHandler
 from data.alpha_vantage import AlphaVantageHandler
 from data.polygon_rest import PolygonRestHandler
 
+import aiohttp
+import pandas as pd
+from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+import shared_state
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,6 +112,62 @@ app.add_middleware(
 
 DASHBOARD_PATH = Path(__file__).parent / "dashboard"
 
+ALPACA_HEADERS = {
+    "APCA-API-KEY-ID": ALPACA_API_KEY,
+    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+}
+
+
+async def fetch_bars_rest(symbol, timeframe="1Hour", limit=100):
+    """Fetch bars directly from Alpaca REST API and return as list[dict]."""
+    try:
+        url = "https://data.alpaca.markets/v2/stocks/bars"
+        params = {"symbols": symbol, "timeframe": timeframe, "limit": limit, "feed": "iex"}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=ALPACA_HEADERS, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    raw = data.get("bars", {}).get(symbol, [])
+                    if raw:
+                        rows = [{"open": b["o"], "high": b["h"], "low": b["l"],
+                                 "close": b["c"], "volume": b["v"],
+                                 "timestamp": b.get("t", "")} for b in raw]
+                        df = pd.DataFrame(rows)
+                        for col in ["open", "high", "low", "close", "volume"]:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+                        return df
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching bars for {symbol}: {e}")
+        return None
+
+
+async def fetch_crypto_bars_rest(symbol, timeframe="1Hour", limit=50):
+    """Fetch crypto bars from Alpaca REST API."""
+    try:
+        # Alpaca crypto bars endpoint
+        url = "https://data.alpaca.markets/v1beta3/crypto/us/bars"
+        params = {"symbols": symbol, "timeframe": timeframe, "limit": limit}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=ALPACA_HEADERS, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    raw = data.get("bars", {}).get(symbol, [])
+                    if raw:
+                        rows = [{"open": b["o"], "high": b["h"], "low": b["l"],
+                                 "close": b["c"], "volume": b["v"],
+                                 "timestamp": b.get("t", "")} for b in raw]
+                        df = pd.DataFrame(rows)
+                        for col in ["open", "high", "low", "close", "volume"]:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+                        return df
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching crypto bars for {symbol}: {e}")
+        return None
+
 
 # ============================================================================
 # ENDPOINTS
@@ -135,14 +196,26 @@ async def health_check():
 @app.get("/api/status")
 async def get_status():
     """Get system status and API connectivity."""
+    stats = shared_state.orchestrator_state["scan_stats"]
+    equities_count = len(shared_state.orchestrator_state["discovered_equities"])
+    crypto_count = len(shared_state.orchestrator_state["discovered_crypto"])
     return {
         "system": "Order Flow Radar",
         "version": "1.0.0",
         "mode": "LIVE — REAL DATA ONLY",
         "timestamp": datetime.utcnow().isoformat(),
-        "api_status": state.api_status,
+        "api_status": {
+            "alpaca": equities_count > 0 or crypto_count > 0,
+            "polygon": equities_count > 100,  # Polygon gainers/losers contribute to discovery
+            "alpha_vantage": True,  # Handler initialized, used for supplemental indicators
+            "schwab": state.api_status.get("schwab", False),
+            "symbols_scanned": stats.get("equities_scanned", 0),
+            "last_scan": stats.get("last_scan_time"),
+        },
         "connected_clients": len(state.connected_clients),
-        "scan_cache_keys": list(state.scan_cache.keys()),
+        "scan_stats": stats,
+        "equities_discovered": equities_count,
+        "crypto_discovered": crypto_count,
         "learner_weights": state.learner.get_weights()
     }
 
@@ -156,34 +229,23 @@ async def analyze_symbol(symbol: str):
     try:
         symbol = symbol.upper()
 
-        # Fetch real data from Alpaca
-        bars = await state.alpaca_equities.get_bars(symbol, timeframe="1Hour", limit=100)
-        if not bars:
+        # Fetch real data from Alpaca REST directly
+        bars = await fetch_bars_rest(symbol, timeframe="1Hour", limit=100)
+        if bars is None or len(bars) == 0:
             return {"symbol": symbol, "error": "No bar data available from API"}
 
-        current_price = bars[-1].get("close", 0) if bars else 0
+        current_price = float(bars["close"].iloc[-1]) if len(bars) > 0 else 0
         if current_price <= 0:
             return {"symbol": symbol, "error": "Invalid price data"}
 
-        # Get ATR from Alpha Vantage
-        atr_data = await state.alpha_vantage.get_atr(symbol)
-        atr = atr_data if atr_data else None
+        # ATR is optional — confluence engine defaults to 2% of price when None
+        atr = None
 
-        # Build data dict for signal evaluation
-        data = {
-            "price": current_price,
-            "bars": {"1hr": bars},
-            "atr": atr,
-            "book": {},
-            "trades": [],
-            "vwap": None
-        }
-
-        # Evaluate all signals
-        orderflow = state.orderflow_signals.evaluate(symbol, data.get("book", {}), data.get("trades", []))
-        momentum = state.momentum_signals.evaluate(symbol, bars, data.get("vwap"))
-        volume = state.volume_signals.evaluate(symbol, bars, data.get("trades", []))
-        trend = state.trend_signals.evaluate(symbol, data.get("bars", {}))
+        # Evaluate all signals (bars is a proper DataFrame now)
+        orderflow = state.orderflow_signals.evaluate(symbol, {}, [])
+        momentum = state.momentum_signals.evaluate(symbol, bars, None)
+        volume = state.volume_signals.evaluate(symbol, bars, [])
+        trend = state.trend_signals.evaluate(symbol, {"1hr": bars})
         levels = state.level_signals.evaluate(symbol, bars, current_price)
 
         all_signals = {
@@ -194,8 +256,8 @@ async def analyze_symbol(symbol: str):
             "levels": levels
         }
 
-        # Generate trade card via confluence engine
-        trade_card = state.confluence_engine.evaluate(
+        # Generate trade card via confluence engine (async to include options recs)
+        trade_card = await state.confluence_engine.evaluate_async(
             symbol, all_signals, current_price, atr, "multi"
         )
 
@@ -298,70 +360,44 @@ async def recommend_options(symbol: str, direction: str = "long", entry: float =
 
 
 @app.get("/api/scan")
-async def scan_equities(min_score: float = 5.0, max_results: int = 20):
-    """Scan equity universe. REAL DATA ONLY."""
+async def scan_equities(min_score: float = 0.0, max_results: int = 50):
+    """Return live scan results from the orchestrator. REAL DATA ONLY."""
     try:
-        cache_key = "equities_scan"
-        now = datetime.utcnow()
+        stats = shared_state.orchestrator_state["scan_stats"]
+        equities = shared_state.orchestrator_state["discovered_equities"]
 
-        # Check 5-min cache
-        if (cache_key in state.scan_cache and
-                state.scan_timestamp.get(cache_key) and
-                (now - state.scan_timestamp[cache_key]).total_seconds() < 300):
-            return {
-                "type": "equity_scan",
-                "timestamp": state.scan_timestamp[cache_key].isoformat(),
-                "from_cache": True,
-                "results": state.scan_cache[cache_key][:max_results]
-            }
+        # Get all live signals (sweeps, whales, unusual volume)
+        all_signals = shared_state.get_live_signals(max_results=100)
+        # Get qualified trade cards
+        trade_cards = shared_state.get_trade_cards(max_results=max_results)
 
-        targets = await state.market_scanner.get_scan_targets()
-        universe = targets.get("equities", [])
-        scan_results = []
+        # Merge: trade cards first, then signals as supplementary
+        results = []
+        seen_symbols = set()
 
-        for symbol in universe:
-            try:
-                bars = await state.alpaca_equities.get_bars(symbol, timeframe="1Hour", limit=50)
-                if not bars:
-                    continue
-                price = bars[-1].get("close", 0)
-                if price <= 0:
-                    continue
+        for tc in trade_cards:
+            if tc.get("score", 0) >= min_score:
+                results.append(tc)
+                seen_symbols.add(tc.get("symbol"))
 
-                atr_data = await state.alpha_vantage.get_atr(symbol)
-                data = {"price": price, "bars": {"1hr": bars}, "atr": atr_data, "book": {}, "trades": [], "vwap": None}
-
-                orderflow = state.orderflow_signals.evaluate(symbol, data["book"], data["trades"])
-                momentum = state.momentum_signals.evaluate(symbol, bars, data["vwap"])
-                volume = state.volume_signals.evaluate(symbol, bars, data["trades"])
-                trend = state.trend_signals.evaluate(symbol, data["bars"])
-                levels = state.level_signals.evaluate(symbol, bars, price)
-
-                all_signals = {"orderflow": orderflow, "momentum": momentum, "volume": volume, "trend": trend, "levels": levels}
-                trade_card = state.confluence_engine.evaluate(symbol, all_signals, price, atr_data, "multi")
-
-                if trade_card and trade_card.get("score", 0) >= min_score:
-                    scan_results.append(trade_card)
-
-            except Exception as e:
-                logger.debug(f"Skipping {symbol}: {e}")
-                continue
+        for sig in all_signals:
+            if sig.get("symbol") not in seen_symbols and sig.get("score", 0) >= min_score:
+                results.append(sig)
+                seen_symbols.add(sig.get("symbol"))
 
         # Sort by score descending
-        scan_results.sort(key=lambda x: x.get("score", 0), reverse=True)
-
-        state.scan_cache[cache_key] = scan_results
-        state.scan_timestamp[cache_key] = now
-        state.api_status["symbols_scanned"] = len(universe)
-        state.api_status["last_scan"] = now.isoformat()
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
 
         return {
             "type": "equity_scan",
-            "timestamp": now.isoformat(),
-            "total_universe": len(universe),
-            "qualified_results": len(scan_results),
+            "timestamp": stats.get("last_scan_time") or datetime.utcnow().isoformat(),
+            "total_universe": len(equities),
+            "qualified_results": len(results),
             "min_score": min_score,
-            "results": scan_results[:max_results]
+            "total_sweeps": stats.get("total_sweeps", 0),
+            "total_whales": stats.get("total_whales", 0),
+            "total_signals": stats.get("total_signals", 0),
+            "results": results[:max_results]
         }
 
     except Exception as e:
@@ -370,64 +406,22 @@ async def scan_equities(min_score: float = 5.0, max_results: int = 20):
 
 
 @app.get("/api/scan/crypto")
-async def scan_crypto(min_score: float = 5.0, max_results: int = 20):
-    """Scan crypto universe. REAL DATA ONLY."""
+async def scan_crypto(min_score: float = 0.0, max_results: int = 20):
+    """Return live crypto scan results from the orchestrator."""
     try:
-        cache_key = "crypto_scan"
-        now = datetime.utcnow()
+        crypto_pairs = shared_state.orchestrator_state["discovered_crypto"]
+        crypto_signals = shared_state.orchestrator_state["crypto_signals"]
 
-        if (cache_key in state.scan_cache and
-                state.scan_timestamp.get(cache_key) and
-                (now - state.scan_timestamp[cache_key]).total_seconds() < 300):
-            return {
-                "type": "crypto_scan",
-                "timestamp": state.scan_timestamp[cache_key].isoformat(),
-                "from_cache": True,
-                "results": state.scan_cache[cache_key][:max_results]
-            }
-
-        targets = await state.market_scanner.get_scan_targets()
-        crypto_symbols = targets.get("crypto", [])
-        scan_results = []
-
-        for symbol in crypto_symbols:
-            try:
-                bars = await state.alpaca_crypto.get_bars(symbol, timeframe="1Hour", limit=50)
-                if not bars:
-                    continue
-                price = bars[-1].get("close", 0)
-                if price <= 0:
-                    continue
-
-                data = {"price": price, "bars": {"1hr": bars}, "atr": None, "book": {}, "trades": [], "vwap": None}
-
-                orderflow = state.orderflow_signals.evaluate(symbol, data["book"], data["trades"])
-                momentum = state.momentum_signals.evaluate(symbol, bars, data["vwap"])
-                volume = state.volume_signals.evaluate(symbol, bars, data["trades"])
-                trend = state.trend_signals.evaluate(symbol, data["bars"])
-                levels = state.level_signals.evaluate(symbol, bars, price)
-
-                all_signals = {"orderflow": orderflow, "momentum": momentum, "volume": volume, "trend": trend, "levels": levels}
-                trade_card = state.confluence_engine.evaluate(symbol, all_signals, price, None, "24/7")
-
-                if trade_card and trade_card.get("score", 0) >= min_score:
-                    scan_results.append(trade_card)
-
-            except Exception as e:
-                logger.debug(f"Skipping crypto {symbol}: {e}")
-                continue
-
-        scan_results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        state.scan_cache[cache_key] = scan_results
-        state.scan_timestamp[cache_key] = now
+        results = [s for s in crypto_signals if s.get("score", 0) >= min_score]
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
 
         return {
             "type": "crypto_scan",
-            "timestamp": now.isoformat(),
-            "total_universe": len(crypto_symbols),
-            "qualified_results": len(scan_results),
+            "timestamp": datetime.utcnow().isoformat(),
+            "total_universe": len(crypto_pairs),
+            "qualified_results": len(results),
             "min_score": min_score,
-            "results": scan_results[:max_results]
+            "results": results[:max_results]
         }
 
     except Exception as e:
@@ -453,6 +447,20 @@ async def get_learner_weights():
         "weights": state.learner.get_weights(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.get("/api/learner/performance")
+async def get_learner_performance():
+    """Get learner performance statistics."""
+    try:
+        stats = state.learner.get_performance_stats()
+        return {
+            "performance": stats,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error fetching performance stats: {e}")
+        return {"performance": {}, "error": str(e)}
 
 
 # ============================================================================

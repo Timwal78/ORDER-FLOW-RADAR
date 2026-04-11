@@ -39,7 +39,7 @@ class MarketScanner:
                 for sort_by in ["volume", "trades"]:
                     try:
                         url = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
-                        params = {"by": sort_by, "top": min(top_n, 200)}
+                        params = {"by": sort_by, "top": min(top_n, 100)}
                         async with session.get(url, headers=self.alpaca_headers, params=params, timeout=aiohttp.ClientTimeout(10)) as resp:
                             if resp.status == 200:
                                 data = await resp.json()

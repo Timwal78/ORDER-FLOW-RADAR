@@ -185,8 +185,14 @@ class AlpacaCryptoHandler:
             logger.error(f"Error processing trade for {symbol}: {e}")
 
     def get_book(self, symbol: str) -> Dict:
-        """Return current orderbook snapshot for symbol."""
-        return self.orderbooks.get(symbol, {"bids": {}, "asks": {}})
+        """Return current orderbook snapshot for symbol as lists of [price, size] pairs."""
+        raw = self.orderbooks.get(symbol, {"bids": {}, "asks": {}})
+        bids_dict = raw.get("bids", {})
+        asks_dict = raw.get("asks", {})
+        # Convert {price: size} dicts to sorted [(price, size)] lists
+        bids_list = sorted([(p, s) for p, s in bids_dict.items()], key=lambda x: x[0], reverse=True)
+        asks_list = sorted([(p, s) for p, s in asks_dict.items()], key=lambda x: x[0])
+        return {"bids": bids_list, "asks": asks_list}
 
     def get_trades(self, symbol: str, n: int = 100) -> List[Dict]:
         """Return last n trades for symbol."""
