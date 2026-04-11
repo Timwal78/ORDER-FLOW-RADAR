@@ -38,7 +38,7 @@ class SweepScanner:
     """Institutional sweep detection engine for Order-Flow-Radar."""
 
     def __init__(self, schwab_api, alpaca_api, polygon_api, discord_alerter,
-                 journal=None, earnings=None, paper=None):
+                 journal=None, earnings=None, paper=None, xbot=None):
         self.schwab = schwab_api
         self.alpaca = alpaca_api
         self.polygon = polygon_api
@@ -46,6 +46,7 @@ class SweepScanner:
         self.journal = journal
         self.earnings = earnings
         self.paper = paper
+        self.xbot = xbot
         self.last_scan_results = []
         self.scan_count = 0
         self._alert_count = 0  # Track for preview drops to free tier
@@ -118,6 +119,10 @@ class SweepScanner:
 
                         # Send to Discord (tiered)
                         await self._send_alert(cl)
+
+                        # Queue for X.com delayed posting
+                        if self.xbot:
+                            self.xbot.queue_signal(cl)
 
             except Exception as e:
                 logger.debug(f"  {symbol} scan error: {e}")

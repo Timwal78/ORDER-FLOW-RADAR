@@ -32,6 +32,7 @@ from modules.sweep_scanner import SweepScanner
 from modules.signal_journal import SignalJournal
 from modules.earnings_detector import EarningsDetector
 from modules.paper_portfolio import PaperPortfolio
+from modules.x_signal_bot import XSignalBot
 from modules.universe_scanner import UniverseScanner
 from modules.discord_alerter import DiscordAlerter
 from modules.dashboard import (
@@ -64,6 +65,7 @@ sweep: SweepScanner
 journal: SignalJournal
 earnings: EarningsDetector
 paper: PaperPortfolio
+xbot: XSignalBot
 
 shutdown_event = asyncio.Event()
 
@@ -336,6 +338,13 @@ async def report_card_loop():
                 await journal.generate_report_card(webhooks)
                 add_system_log("Daily report card sent")
                 logger.info("Daily report card sent to all tiers")
+
+                # Post daily recap to X.com
+                try:
+                    stats = journal.get_stats(days=1)
+                    await xbot.post_daily_recap(stats)
+                except Exception as e:
+                    logger.debug(f"X.com daily recap: {e}")
                 # Wait 2 hours to avoid re-sending
                 await asyncio.sleep(7200)
             else:
@@ -360,6 +369,19 @@ async def paper_portfolio_loop():
         except Exception as e:
             logger.error(f"Paper portfolio loop error: {e}")
             await asyncio.sleep(300)
+
+
+async def xbot_loop():
+    """Process X.com delayed signal queue every 5 minutes."""
+    await asyncio.sleep(300)  # Initial delay
+
+    while not shutdown_event.is_set():
+        try:
+            await xbot.process_queue()
+        except Exception as e:
+            logger.debug(f"X.com bot error: {e}")
+
+        await asyncio.sleep(300)  # Every 5 min
 
 
 async def dashboard_server():
@@ -402,8 +424,9 @@ async def main():
     journal = SignalJournal()
     earnings = EarningsDetector()
     paper = PaperPortfolio(starting_balance=10000)
+    xbot = XSignalBot()
     sweep = SweepScanner(schwab, alpaca, polygon, discord,
-                         journal=journal, earnings=earnings, paper=paper)
+                         journal=journal, earnings=earnings, paper=paper, xbot=xbot)
 
     # Wire dashboard — pass all engines including discord
     set_engines(confluence, flow, universe, discord, alpaca)
@@ -445,6 +468,7 @@ async def main():
         asyncio.create_task(sweep_scan_loop()),
         asyncio.create_task(report_card_loop()),
         asyncio.create_task(paper_portfolio_loop()),
+        asyncio.create_task(xbot_loop()),
         asyncio.create_task(discord_heartbeat_loop()),
     ]
 
