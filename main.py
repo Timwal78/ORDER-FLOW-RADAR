@@ -28,6 +28,9 @@ from modules.alpaca_api import AlpacaAPI
 from modules.flow_engine import FlowEngine
 from modules.options_recommender import OptionsRecommender
 from modules.confluence_engine import ConfluenceEngine
+from modules.sweep_scanner import SweepScanner
+from modules.signal_journal import SignalJournal
+from modules.earnings_detector import EarningsDetector
 from modules.universe_scanner import UniverseScanner
 from modules.discord_alerter import DiscordAlerter
 from modules.dashboard import (
@@ -56,6 +59,9 @@ options_rec: OptionsRecommender
 confluence: ConfluenceEngine
 universe: UniverseScanner
 discord: DiscordAlerter
+sweep: SweepScanner
+journal: SignalJournal
+earnings: EarningsDetector
 
 shutdown_event = asyncio.Event()
 
@@ -280,6 +286,63 @@ async def discord_heartbeat_loop():
         await asyncio.sleep(900)  # Every 15 min
 
 
+async def sweep_scan_loop():
+    """Run institutional sweep scanner every 10 minutes.
+    Uses the universe scanner's active tickers as input."""
+    await asyncio.sleep(120)  # Let universe build first (2 min)
+
+    while not shutdown_event.is_set():
+        try:
+            # Get current universe
+            symbols = list(config.ALWAYS_SCAN)
+            if universe and hasattr(universe, 'active_universe'):
+                symbols = list(set(symbols + universe.active_universe[:500]))
+
+            if symbols:
+                results = await sweep.run_scan(symbols)
+                if results:
+                    add_system_log(f"Sweep scan: {len(results)} institutional setups found")
+                else:
+                    add_system_log("Sweep scan: no qualifying setups this cycle")
+
+            # Update journal prices for open signals
+            try:
+                await journal.update_prices(schwab)
+            except Exception as e:
+                logger.debug(f"Journal price update: {e}")
+
+        except Exception as e:
+            logger.error(f"Sweep scan error: {e}")
+            add_system_log(f"Sweep scan error: {str(e)[:60]}")
+
+        await asyncio.sleep(600)  # Every 10 min
+
+
+async def report_card_loop():
+    """Send end-of-day report card at 4:15 PM ET."""
+    while not shutdown_event.is_set():
+        try:
+            now = datetime.now()
+            # Check if it's around 4:15 PM (market close + 15 min)
+            if now.hour == 16 and 14 <= now.minute <= 16:
+                import os
+                webhooks = {
+                    "free": os.getenv("DISCORD_WEBHOOK_FREE", ""),
+                    "pro": os.getenv("DISCORD_WEBHOOK_PRO", ""),
+                    "premium": os.getenv("DISCORD_WEBHOOK_PREMIUM", ""),
+                }
+                await journal.generate_report_card(webhooks)
+                add_system_log("Daily report card sent")
+                logger.info("Daily report card sent to all tiers")
+                # Wait 2 hours to avoid re-sending
+                await asyncio.sleep(7200)
+            else:
+                await asyncio.sleep(60)  # Check every minute
+        except Exception as e:
+            logger.error(f"Report card error: {e}")
+            await asyncio.sleep(300)
+
+
 async def dashboard_server():
     """Run FastAPI dashboard."""
     server_config = uvicorn.Config(
@@ -293,7 +356,7 @@ async def dashboard_server():
 
 
 async def main():
-    global schwab, polygon, alpaca, flow, options_rec, confluence, universe, discord
+    global schwab, polygon, alpaca, flow, options_rec, confluence, universe, discord, sweep
 
     logger.info("=" * 60)
     logger.info("ORDER-FLOW-RADAR™ | ScriptMasterLabs™")
@@ -317,6 +380,10 @@ async def main():
     confluence = ConfluenceEngine(flow, options_rec)
     universe = UniverseScanner(schwab, polygon, alpaca)
     discord = DiscordAlerter(config.DISCORD_WEBHOOK_URL)
+    journal = SignalJournal()
+    earnings = EarningsDetector()
+    sweep = SweepScanner(schwab, alpaca, polygon, discord,
+                         journal=journal, earnings=earnings)
 
     # Wire dashboard — pass all engines including discord
     set_engines(confluence, flow, universe, discord, alpaca)
@@ -355,6 +422,8 @@ async def main():
         asyncio.create_task(universe_loop()),
         asyncio.create_task(stream_loop()),
         asyncio.create_task(signal_eval_loop()),
+        asyncio.create_task(sweep_scan_loop()),
+        asyncio.create_task(report_card_loop()),
         asyncio.create_task(discord_heartbeat_loop()),
     ]
 

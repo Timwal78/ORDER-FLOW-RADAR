@@ -12,3 +12,5 @@ venv/
 .venv/
 journal/
 signal_journal.csv
+signal_data/
+_test_*
