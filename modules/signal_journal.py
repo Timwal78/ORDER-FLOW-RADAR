@@ -267,30 +267,40 @@ class SignalJournal:
             "timestamp": datetime.now().isoformat(),
         }]}
 
-        # Send to appropriate channels
-        async with aiohttp.ClientSession() as session:
-            if discord_webhooks.get("premium"):
-                try:
-                    await session.post(discord_webhooks["premium"], json=premium_embed)
-                    logger.info("Report card sent to PREMIUM")
-                except:
-                    pass
-
-            if discord_webhooks.get("pro"):
-                try:
-                    await asyncio.sleep(0.5)
-                    await session.post(discord_webhooks["pro"], json=pro_embed)
-                    logger.info("Report card sent to PRO")
-                except:
-                    pass
-
-            if discord_webhooks.get("free"):
-                try:
-                    await asyncio.sleep(0.5)
-                    await session.post(discord_webhooks["free"], json=free_embed)
-                    logger.info("Report card sent to FREE")
-                except:
-                    pass
+        # Send to appropriate channels with retries
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            for tier, embed_payload in [
+                ("premium", premium_embed),
+                ("pro", pro_embed),
+                ("free", free_embed),
+            ]:
+                wh_url = discord_webhooks.get(tier, "")
+                if not wh_url:
+                    continue
+                
+                for attempt in range(3):
+                    try:
+                        async with session.post(wh_url, json=embed_payload) as resp:
+                            if resp.status in (200, 204):
+                                logger.info(f"Report card sent to {tier.upper()}")
+                                break
+                            elif resp.status == 429:
+                                try:
+                                    err = await resp.json()
+                                    wait = float(err.get("retry_after", 2.0))
+                                except:
+                                    wait = 2.0 * (attempt + 1)
+                                logger.warning(f"Report card rate-limited [{tier.upper()}], retry in {wait}s")
+                                await asyncio.sleep(wait + 0.2)
+                            else:
+                                body = await resp.text()
+                                logger.error(f"Report card failed [{tier.upper()}] ({resp.status}): {body[:200]}")
+                                break
+                    except Exception as e:
+                        logger.error(f"Report card send error [{tier.upper()}]: {e}")
+                        await asyncio.sleep(2 ** (attempt + 1))
+                
+                await asyncio.sleep(0.5)  # Space out between tiers
 
         # Save daily report
         report_file = os.path.join(DAILY_DIR, f"report_{datetime.now().strftime('%Y-%m-%d')}.json")

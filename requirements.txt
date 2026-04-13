@@ -2,3 +2,4 @@ aiohttp>=3.9
 fastapi>=0.110
 uvicorn>=0.27
 python-dotenv>=1.0
+tweepy>=4.14

@@ -260,7 +260,13 @@ class SweepScanner:
                 "high": fallback_price, "low": fallback_price, "vwap": fallback_price}
 
     def _cluster_and_score(self, sweeps, mkt):
-        """12-point scoring system -> BUY/SELL/HOLD."""
+        """
+        Institutional-grade 12-point scoring system → BUY/SELL/HOLD.
+        v2: Graduated V/OI, IV-adjusted stops, expected-move TPs,
+            IV crush warnings, spread quality gates.
+        """
+        import math
+
         groups = defaultdict(lambda: {"sweeps": [], "combined": 0})
 
         for s in sweeps:
@@ -276,34 +282,53 @@ class SweepScanner:
             sc = 0
             bd = {}
 
+            # ── Whale detection (2pts) ──
             mx = max(s["premium"] for s in cl["sweeps"])
             if mx >= 500_000: sc += 2; bd["whale"] = 2
+
+            # ── Combined cluster premium (2pts) ──
             if cl["combined"] >= 1_000_000: sc += 2; bd["combined"] = 2
+
+            # ── Stacked prints — repeated conviction (2pts) ──
             if len(cl["sweeps"]) >= 3: sc += 2; bd["stacked"] = 2
 
-            aggr = sum(1 for s in cl["sweeps"] if s["vol_oi"] > 1.5)
-            if aggr >= len(cl["sweeps"]) * 0.4: sc += 1; bd["vol_oi"] = 1
+            # ── Volume/OI ratio — GRADUATED (up to 2pts) ──
+            # Truly abnormal V/OI is the hallmark of informed flow
+            vol_oi_values = [s["vol_oi"] for s in cl["sweeps"]]
+            max_vol_oi = max(vol_oi_values) if vol_oi_values else 0
+            avg_vol_oi = sum(vol_oi_values) / len(vol_oi_values) if vol_oi_values else 0
+            if max_vol_oi >= 10.0 or avg_vol_oi >= 5.0:
+                sc += 2; bd["vol_oi"] = 2   # Extreme — 10x+ single or 5x+ average
+            elif max_vol_oi >= 5.0 or avg_vol_oi >= 2.5:
+                sc += 1; bd["vol_oi"] = 1   # Strong — 5x+ single or 2.5x+ average
+            # Below 5x max and 2.5x avg = no points (not abnormal enough)
 
+            # ── DTE sweet spot (1pt) ──
             avg_dte = sum(s["dte"] for s in cl["sweeps"]) / len(cl["sweeps"])
             if 2 <= avg_dte <= 14: sc += 1; bd["dte"] = 1
 
+            # ── OTM proximity (1pt) ──
             avg_otm = sum(abs(s["otm_pct"]) for s in cl["sweeps"]) / len(cl["sweeps"])
             is_etf = cl["ticker"] in ETFS
             if avg_otm <= (0.03 if is_etf else 0.05): sc += 1; bd["otm"] = 1
 
+            # ── VWAP confirmation (1pt — reduced from 2, rebalanced to V/OI) ──
             price = mkt.get("price", 0)
             vwap = mkt.get("vwap", 0)
             if vwap > 0 and price > 0:
-                if cl["direction"] == "bullish" and price > vwap: sc += 2; bd["vwap"] = 2
-                elif cl["direction"] == "bearish" and price < vwap: sc += 2; bd["vwap"] = 2
+                if cl["direction"] == "bullish" and price > vwap: sc += 1; bd["vwap"] = 1
+                elif cl["direction"] == "bearish" and price < vwap: sc += 1; bd["vwap"] = 1
 
+            # ── Opening Range Breakout confirmation (1pt) ──
             op = mkt.get("open", 0)
             if op > 0:
                 if cl["direction"] == "bullish" and price > op: sc += 1; bd["orb"] = 1
                 elif cl["direction"] == "bearish" and price < op: sc += 1; bd["orb"] = 1
 
+            # ── Grade assignment ──
             grade = "S" if sc >= 11 else "A" if sc >= 9 else "B" if sc >= 7 else "C" if sc >= 5 else "F"
 
+            # ── Disqualifiers ──
             dqs = []
             if len(cl["sweeps"]) < 2: dqs.append("Single print")
             wide = sum(1 for s in cl["sweeps"] if s["spread_pct"] > 0.20)
@@ -311,6 +336,11 @@ class SweepScanner:
             if cl["direction"] == "bullish" and vwap > 0 and price < vwap * 0.995: dqs.append("Below VWAP")
             if cl["direction"] == "bearish" and vwap > 0 and price > vwap * 1.005: dqs.append("Above VWAP")
 
+            # IV crush warning (not a disqualifier, but flagged)
+            avg_iv = sum(s.get("iv", 0) for s in cl["sweeps"]) / len(cl["sweeps"])
+            iv_crush_warning = avg_iv > 0.80
+
+            # ── Action decision ──
             best = max(cl["sweeps"], key=lambda s: s["premium"])
             if sc >= 7 and not dqs:
                 action = "BUY CALL" if cl["direction"] == "bullish" else "BUY PUT"
@@ -319,7 +349,50 @@ class SweepScanner:
             else:
                 action = "PASS"
 
+            # ═══════════════════════════════════════════════════════════════
+            # ENTRY / STOP / TP — IV-adjusted, DTE-aware
+            # No more flat percentages. Levels based on the underlying's
+            # expected move and the option's delta sensitivity.
+            # ═══════════════════════════════════════════════════════════════
             entry = best["price"]
+            underlying_price = best.get("underlying_price", price) or price
+            iv = best.get("iv", 0.30) or 0.30
+            dte = best.get("dte", 7) or 7
+            delta = abs(best.get("delta", 0.45)) or 0.45
+
+            # Expected move of the UNDERLYING (1-sigma)
+            # σ_move = Price × IV × √(DTE/365)
+            t_years = max(dte, 1) / 365.0
+            sigma_move = underlying_price * iv * math.sqrt(t_years)
+
+            # Option's expected move ≈ delta × underlying_move
+            # This gives us a statistically-grounded option price change estimate
+            option_1sigma = delta * sigma_move
+
+            # STOP: Based on 0.75σ adverse move (tighter for short DTE)
+            # Short DTE options move faster, so stops must be tighter
+            dte_tightening = max(0.5, min(1.0, dte / 14.0))  # Scale: 0.5x at 1 DTE → 1x at 14 DTE
+            stop_distance = option_1sigma * 0.75 * dte_tightening
+            stop = max(round(entry * 0.30, 4), round(entry - stop_distance, 4))  # Floor at 70% loss
+
+            # TP1: 1.0σ favorable move (high-probability target)
+            tp1_distance = option_1sigma * 1.0
+            tp1 = round(entry + tp1_distance, 4)
+
+            # TP2: 1.5σ favorable move (extended target, trail stop here)
+            tp2_distance = option_1sigma * 1.5
+            tp2 = round(entry + tp2_distance, 4)
+
+            # Sanity checks — ensure TPs are actually above entry
+            if tp1 <= entry: tp1 = round(entry * 1.20, 4)
+            if tp2 <= tp1: tp2 = round(tp1 * 1.25, 4)
+            if stop >= entry: stop = round(entry * 0.50, 4)
+
+            # Risk/Reward ratio for the signal card
+            risk = entry - stop if entry > stop else entry * 0.35
+            reward = tp1 - entry if tp1 > entry else entry * 0.20
+            rr_ratio = round(reward / risk, 2) if risk > 0 else 0
+
             results.append({
                 "ticker": cl["ticker"], "direction": cl["direction"],
                 "action": action,
@@ -329,8 +402,12 @@ class SweepScanner:
                 "sweeps": cl["sweeps"], "combined": cl["combined"],
                 "score": sc, "grade": grade, "breakdown": bd, "disqualifiers": dqs,
                 "price": price, "vwap": vwap, "open": op,
-                "entry": entry, "stop": round(entry * 0.65, 4),
-                "tp1": round(entry * 1.30, 4), "tp2": round(entry * 1.60, 4),
+                "entry": entry, "stop": stop,
+                "tp1": tp1, "tp2": tp2,
+                "risk_reward": rr_ratio,
+                "expected_move_1sigma": round(sigma_move, 2),
+                "iv_crush_warning": iv_crush_warning,
+                "avg_vol_oi": round(avg_vol_oi, 1),
                 "avg_dte": round(avg_dte), "avg_otm": avg_otm, "max_single": mx,
                 "delta": best.get("delta", 0), "gamma": best.get("gamma", 0),
                 "theta": best.get("theta", 0), "iv": best.get("iv", 0),
@@ -413,9 +490,22 @@ class SweepScanner:
                 f"V/OI:{s['vol_oi']:.1f} | {s['dte']}d | {abs(s['otm_pct'])*100:.1f}%OTM{greek}"
             )
 
+        # IV crush warning tag
+        iv_tag = ""
+        if cl.get("iv_crush_warning"):
+            iv_tag = "\n⚠️ **IV CRUSH RISK** — IV > 80%"
+
+        # Entry line with R:R
+        entry_line = (
+            f"${cl['entry']:.2f} / ${cl['stop']:.2f} / "
+            f"${cl['tp1']:.2f} / ${cl['tp2']:.2f}"
+        )
+        if cl.get("risk_reward"):
+            entry_line += f"  (R:R {cl['risk_reward']})"
+
         embed = {"embeds": [{
             "title": f"{emoji} [{cl['grade']}] {cl['action']} -- {cl['ticker']}",
-            "description": f"**{cl['contract']}**\n*Tier: {tier_label}*{earnings_tag}",
+            "description": f"**{cl['contract']}**\n*Tier: {tier_label}*{earnings_tag}{iv_tag}",
             "color": color,
             "fields": [
                 {"name": "Action", "value": cl["action"], "inline": True},
@@ -424,36 +514,29 @@ class SweepScanner:
                 {"name": "Price", "value": f"${cl['price']:.2f}", "inline": True},
                 {"name": "VWAP", "value": f"${cl['vwap']:.2f}", "inline": True},
                 {"name": "Direction", "value": cl['direction'].upper(), "inline": True},
+                {"name": "Exp. Move (1σ)", "value": f"${cl.get('expected_move_1sigma', 0):.2f}", "inline": True},
+                {"name": "Avg V/OI", "value": f"{cl.get('avg_vol_oi', 0):.1f}x", "inline": True},
+                {"name": "R:R", "value": f"{cl.get('risk_reward', 0):.1f}:1", "inline": True},
                 {"name": "Sweeps", "value": "\n".join(sweep_lines) or "--", "inline": False},
                 {"name": "Entry / Stop / TP1 / TP2",
-                 "value": f"${cl['entry']:.2f} / ${cl['stop']:.2f} / ${cl['tp1']:.2f} / ${cl['tp2']:.2f}",
-                 "inline": False},
+                 "value": entry_line, "inline": False},
             ],
-            "footer": {"text": "SML Sweep Scanner | Order-Flow-Radar | ScriptMasterLabs.com"},
+            "footer": {"text": "SML Sweep Scanner v2 | Order-Flow-Radar | ScriptMasterLabs.com"},
             "timestamp": datetime.now().isoformat(),
         }]}
 
-        session = await self.discord._get_session()
         for wh in webhooks:
-            try:
-                async with session.post(wh, json=embed) as resp:
-                    if resp.status in (200, 204):
-                        logger.info(f"Sweep alert [{cl['grade']}] {cl['ticker']} -> {wh[:60]}...")
-                    elif resp.status == 429:
-                        try:
-                            err = await resp.json()
-                            wait = float(err.get("retry_after", 1.5))
-                            await asyncio.sleep(wait + 0.1)
-                            async with session.post(wh, json=embed) as retry:
-                                pass
-                        except:
-                            await asyncio.sleep(1.5)
-                    else:
-                        body = await resp.text()
-                        logger.warning(f"Sweep alert failed ({resp.status}): {body[:100]}")
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.warning(f"Discord sweep error: {e}")
+            tier_name = "SWEEP"
+            if wh == _get_webhooks().get("free"): tier_name = "FREE"
+            elif wh == _get_webhooks().get("pro"): tier_name = "PRO"
+            elif wh == _get_webhooks().get("premium"): tier_name = "PREMIUM"
+            
+            ok = await self.discord._post_webhook(wh, embed, f"SWEEP-{tier_name}")
+            if ok:
+                logger.info(f"Sweep alert [{cl['grade']}] {cl['ticker']} → {tier_name}")
+            else:
+                logger.error(f"FAILED sweep alert [{cl['grade']}] {cl['ticker']} → {tier_name}")
+            await asyncio.sleep(0.4)
 
         # PREVIEW DROP: Send redacted teaser to FREE tier
         if getattr(self, '_preview_drop', False):
@@ -475,13 +558,10 @@ class SweepScanner:
                     "footer": {"text": "Upgrade to PRO/ELITE | ScriptMasterLabs.com"},
                     "timestamp": datetime.now().isoformat(),
                 }]}
-                try:
-                    await asyncio.sleep(0.5)
-                    async with session.post(wh["free"], json=preview) as resp:
-                        if resp.status in (200, 204):
-                            logger.info(f"Preview drop sent to FREE: {cl['ticker']}")
-                except:
-                    pass
+                await asyncio.sleep(0.5)
+                ok = await self.discord._post_webhook(wh["free"], preview, "SWEEP-FREE-PREVIEW")
+                if ok:
+                    logger.info(f"Preview drop sent to FREE: {cl['ticker']}")
                 self._preview_drop = False
 
     def get_results(self) -> list:

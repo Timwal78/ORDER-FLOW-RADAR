@@ -96,8 +96,15 @@ def check_config():
         optional.append("POLYGON_API_KEY (universe scan limited)")
     if not config.ALPHA_VANTAGE_KEY:
         optional.append("ALPHA_VANTAGE_KEY (sentiment disabled)")
-    if not config.DISCORD_WEBHOOK_URL:
-        optional.append("DISCORD_WEBHOOK_URL (alerts disabled)")
+    import os
+    if not os.getenv("DISCORD_WEBHOOK_FREE"):
+        optional.append("DISCORD_WEBHOOK_FREE (free-tier alerts disabled)")
+    if not os.getenv("DISCORD_WEBHOOK_PRO"):
+        optional.append("DISCORD_WEBHOOK_PRO (pro-tier alerts disabled)")
+    if not os.getenv("DISCORD_WEBHOOK_PREMIUM"):
+        optional.append("DISCORD_WEBHOOK_PREMIUM (premium-tier alerts disabled)")
+    if not any([os.getenv("DISCORD_WEBHOOK_FREE"), os.getenv("DISCORD_WEBHOOK_PRO"), os.getenv("DISCORD_WEBHOOK_PREMIUM")]):
+        logger.error("CRITICAL: No Discord webhooks configured! Paying customers will NOT receive signals!")
     for o in optional:
         logger.warning(f"Optional missing: {o}")
     return missing
@@ -272,6 +279,18 @@ async def signal_eval_loop():
         await asyncio.sleep(config.SIGNAL_EVAL_INTERVAL)
 
 
+async def free_queue_loop():
+    """Process delayed free-tier Discord signals every 30 seconds.
+    CRITICAL: Free-tier customers rely on this loop to receive their signals."""
+    await asyncio.sleep(30)  # Let system warm up
+    while not shutdown_event.is_set():
+        try:
+            await discord.process_free_queue()
+        except Exception as e:
+            logger.error(f"Free queue processing error: {e}")
+        await asyncio.sleep(30)
+
+
 async def discord_heartbeat_loop():
     """Send periodic Discord status updates so user knows system is alive."""
     await asyncio.sleep(300)  # First heartbeat after 5 min
@@ -280,9 +299,12 @@ async def discord_heartbeat_loop():
             universe_count = len(getattr(universe, 'active_universe', []))
             flow_count = len(flow.states)
             signal_count = len(confluence.active_signals)
+            delivery = discord.get_delivery_stats()
             await discord.send_status(
                 f"💚 **Heartbeat** | Universe: {universe_count} | "
                 f"Flow: {flow_count} active | Signals: {signal_count} | "
+                f"Delivery: {delivery['success_rate']:.0f}% success | "
+                f"Free queue: {delivery['queue_depth']} pending | "
                 f"Dashboard: http://localhost:{config.DASHBOARD_PORT}"
             )
         except Exception:
@@ -420,7 +442,7 @@ async def main():
     options_rec = OptionsRecommender(schwab)
     confluence = ConfluenceEngine(flow, options_rec)
     universe = UniverseScanner(schwab, polygon, alpaca)
-    discord = DiscordAlerter(config.DISCORD_WEBHOOK_URL)
+    discord = DiscordAlerter()  # Reads all 3 tier webhooks from env internally
     journal = SignalJournal()
     earnings = EarningsDetector()
     paper = PaperPortfolio(starting_balance=10000)
@@ -431,7 +453,8 @@ async def main():
     # Wire dashboard — pass all engines including discord
     set_engines(confluence, flow, universe, discord, alpaca)
     add_system_log("System initialized")
-    set_api_status("discord", bool(config.DISCORD_WEBHOOK_URL))
+    discord_configured = any([discord.webhook_free, discord.webhook_pro, discord.webhook_premium])
+    set_api_status("discord", discord_configured)
 
     logger.info(f"Always-scan: {config.ALWAYS_SCAN}")
     logger.info(f"Dashboard: http://localhost:{config.DASHBOARD_PORT}")
@@ -465,6 +488,7 @@ async def main():
         asyncio.create_task(universe_loop()),
         asyncio.create_task(stream_loop()),
         asyncio.create_task(signal_eval_loop()),
+        asyncio.create_task(free_queue_loop()),          # NEW: process free-tier delayed signals
         asyncio.create_task(sweep_scan_loop()),
         asyncio.create_task(report_card_loop()),
         asyncio.create_task(paper_portfolio_loop()),

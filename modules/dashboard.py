@@ -150,6 +150,20 @@ async def get_universe():
     return {"tickers": [], "count": 0}
 
 
+@app.get("/api/discord")
+async def get_discord_stats():
+    """Discord delivery stats — monitor success/failure by tier."""
+    if _discord_alerter and hasattr(_discord_alerter, 'get_delivery_stats'):
+        stats = _discord_alerter.get_delivery_stats()
+        stats["webhooks"] = {
+            "free": bool(_discord_alerter.webhook_free),
+            "pro": bool(_discord_alerter.webhook_pro),
+            "premium": bool(_discord_alerter.webhook_premium),
+        }
+        return stats
+    return {"error": "Discord alerter not initialized"}
+
+
 @app.get("/api/stream")
 async def stream_signals(request: Request):
     """SSE endpoint — browser connects once, signals push continuously.
