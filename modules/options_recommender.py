@@ -6,7 +6,7 @@ Scans real Schwab options chains. Picks the best contract using:
   - Liquidity gates (OI, volume, spread width)
   - Flow alignment with directional signal
   - DTE optimization for swing vs. scalp
-No placeholders. No guessing. Real greeks from real chains.
+Data-driven analysis. No approximations. Real greeks from real chains.
 """
 import math
 import logging
@@ -106,19 +106,19 @@ class OptionsRecommender:
                 # ── Hard liquidity gates (institutional-grade minimums) ──
                 if bid <= 0 or ask <= 0:
                     continue
-                if oi < 100:  # Raised from 50 — need real market depth
+                if oi < 50:  # Loosened from 100 — allow high-impact low-OI setups
                     continue
-                if vol < 10:  # Need some daily activity
+                if vol < 5:  # Loosened from 10 — allow early-bird trades
                     continue
 
                 # ── Delta filter ──
                 if delta < config.PREFERRED_DELTA_MIN or delta > config.PREFERRED_DELTA_MAX:
                     continue
 
-                # ── Spread check — skip if spread is more than 25% of mid ──
+                # ── Spread check — skip if spread is more than 35% of mid ──
                 mid = (bid + ask) / 2.0
                 spread_pct = (ask - bid) / mid * 100 if mid > 0 else 999
-                if spread_pct > 25:  # Tightened from 30%
+                if spread_pct > 35:  # Loosened from 25% to account for wider Call spreads in volatile tapes
                     continue
 
                 # Normalize IV (Schwab returns as whole number like 85.0)

@@ -14,7 +14,7 @@ class Signal:
     """A complete actionable signal with options recommendation."""
     __slots__ = [
         "symbol", "direction", "action", "score", "confidence",
-        "flow_data", "options_recs", "timestamp", "reasons",
+        "flow_data", "options_recs", "timestamp", "reasons", "is_new_alert",
     ]
 
     def __init__(self):
@@ -27,6 +27,7 @@ class Signal:
         self.options_recs = []
         self.timestamp = ""
         self.reasons = []
+        self.is_new_alert = False
 
     def to_dict(self) -> dict:
         return {
@@ -39,6 +40,7 @@ class Signal:
             "options": self.options_recs,
             "timestamp": self.timestamp,
             "reasons": self.reasons,
+            "is_new_alert": self.is_new_alert,
         }
 
 
@@ -48,6 +50,7 @@ class ConfluenceEngine:
         self.options_rec = options_recommender
         self.active_signals: dict[str, Signal] = {}
         self.signal_history: list[dict] = []
+        self._last_alert_states: dict[str, dict] = {}  # symbol -> {time, score, direction}
 
     async def evaluate(self, symbol: str) -> Signal | None:
         """
@@ -102,6 +105,28 @@ class ConfluenceEngine:
         else:
             sig.action = f"{'BULLISH' if direction == 'bullish' else 'BEARISH'} — no liquid options found"
             sig.confidence = "LOW"
+
+        # ── Cooldown / Repeat Alert Suppression ──
+        import time
+        now_ts = time.time()
+        last_state = self._last_alert_states.get(symbol, {"time": 0, "score": 0, "direction": ""})
+        
+        # Determine if this is a "New Alert" worth pushing to Discord/SSE
+        is_new = False
+        if direction != last_state["direction"]:
+            is_new = True  # Direction flip is always an alert
+        elif now_ts - last_state["time"] >= config.SIGNAL_COOLDOWN:
+            is_new = True  # Cooldown passed (300s / 5m default)
+        elif score > last_state["score"] + 15:
+            is_new = True  # Significant score increase
+            
+        sig.is_new_alert = is_new
+        if is_new:
+            self._last_alert_states[symbol] = {
+                "time": now_ts,
+                "score": score,
+                "direction": direction
+            }
 
         # Store
         self.active_signals[symbol] = sig

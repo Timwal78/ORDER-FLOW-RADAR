@@ -201,11 +201,9 @@ async def rest_snapshot_loop():
                                 daily_bar = snap.get("dailyBar", {})
                                 
                                 price = latest_trade.get("p") or min_bar.get("c") or daily_bar.get("c") or 0
-                                size = latest_trade.get("s", 0)
                                 if price > 0:
                                     if state.last_price == 0:
                                         state.last_price = price
-                                        state.total_volume = max(state.total_volume, size or 1)
                                         total_injected += 1
                                         
                                 # Process Quote
@@ -253,21 +251,24 @@ async def signal_eval_loop():
                 evaluated += 1
 
                 if sig:
-                    fired += 1
+                    evaluated += 1
                     sig_dict = sig.to_dict()
 
-                    # Push to dashboard SSE
+                    # Always push to dashboard SSE for "Live Table" updates
+                    # but only push to Discord and "Alerts" if is_new_alert is True
                     await push_signal(sig_dict)
 
-                    # Push to Discord
-                    await discord.send_signal(sig_dict)
-
-                    # Log it
-                    opts_str = ""
-                    if sig.options_recs:
-                        top = sig.options_recs[0]
-                        opts_str = f" → {top['direction']} ${top['strike']:.2f} {top['expiration']}"
-                    logger.info(f"🎯 SIGNAL: {symbol} {sig.action} (Score: {sig.score:.0f}){opts_str}")
+                    if sig.is_new_alert:
+                        fired += 1
+                        # Push to Discord
+                        await discord.send_signal(sig_dict)
+                        
+                        # Log it
+                        opts_str = ""
+                        if sig.options_recs:
+                            top = sig.options_recs[0]
+                            opts_str = f" → {top['direction']} ${top['strike']:.2f} {top['expiration']}"
+                        logger.info(f"🎯 ALERT: {symbol} {sig.action} (Score: {sig.score:.0f}){opts_str}")
 
             if evaluated > 0:
                 add_system_log(f"Eval cycle: {evaluated} symbols, {fired} signals")

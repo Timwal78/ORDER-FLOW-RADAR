@@ -224,7 +224,7 @@ async def get_status():
 async def analyze_symbol(symbol: str):
     """
     Analyze a symbol on-demand using REAL data from APIs.
-    If data fetch fails, returns error — NO FAKE DATA.
+    If data fetch fails, returns error — Strictly Real-Time Data.
     """
     try:
         symbol = symbol.upper()

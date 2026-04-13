@@ -125,30 +125,37 @@ class FlowEngine:
         large_total = state.large_buy_count + state.large_sell_count
         large_buy_pct = state.large_buy_count / large_total * 100 if large_total > 0 else 50
 
-        # Spread tightness (tighter = more liquid = more reliable signals)
-        spread_score = 0
-        if state.last_price > 0 and state.spread > 0:
+        # Spread score — institutional grade (0.1% to 1.5% is common range)
+        spread_score = 100
+        if state.last_price > 0:
             spread_pct = state.spread / state.last_price * 100
-            spread_score = max(0, min(100, 100 - spread_pct * 100))
+            # Standard spread scoring: tight = liquid. Penalty factor from config.
+            spread_score = max(0, min(100, 100 - (spread_pct * config.SPREAD_PENALTY_MULT)))
 
         # Composite scoring
         # Direction: positive = bullish, negative = bearish
         direction_raw = (buy_pct - 50) * 2  # -100 to +100
 
-        # Weight large trades more heavily
+        # Weight large trades more heavily using LARGE_TRADE_WEIGHT
         if large_total >= 3:
-            direction_raw = direction_raw * 0.6 + (large_buy_pct - 50) * 2 * 0.4
+            direction_raw = direction_raw * (1 - config.LARGE_TRADE_WEIGHT) + (large_buy_pct - 50) * 2 * config.LARGE_TRADE_WEIGHT
 
-        # CVD confirmation
+        # CVD confirmation — ensure this is symmetric and properly handles neutral tape
         cvd_confirms = (cvd_trend > 0 and direction_raw > 0) or (cvd_trend < 0 and direction_raw < 0)
 
         # Final score 0-100 (how strong is the signal)
         intensity = abs(direction_raw)
+        
+        # Boost if confirming CVD using parameters from config
         if cvd_confirms:
-            intensity = min(100, intensity * 1.3)
-        score = min(100, intensity * (spread_score / 100) if spread_score > 0 else intensity * 0.5)
+            intensity = min(100, intensity * config.CVD_BOOST_FACTOR)
+        elif abs(cvd_trend) < 500: # Neutral tape doesn't penalize
+            intensity = min(100, intensity * config.NEUTRAL_TAPE_BOOST)
 
-        direction = "bullish" if direction_raw > 10 else "bearish" if direction_raw < -10 else "neutral"
+        score = min(100, intensity * (spread_score / 100) if spread_score > 0 else intensity * 0.7)
+
+        # Refined direction thresholds — ±8 to be slightly more responsive than ±10
+        direction = "bullish" if direction_raw > 8 else "bearish" if direction_raw < -8 else "neutral"
 
         return {
             "symbol": symbol,

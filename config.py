@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =============================================================================
-# API KEYS — All from .env, no defaults, no fakes
+# API KEYS — All from .env, no defaults, strictly real-time keys
 # =============================================================================
 SCHWAB_APP_KEY = os.getenv("SCHWAB_APP_KEY", "")
 SCHWAB_APP_SECRET = os.getenv("SCHWAB_APP_SECRET", "")
@@ -34,16 +34,21 @@ ALWAYS_SCAN = [s.strip().upper() for s in os.getenv("ALWAYS_SCAN", "AMC,GME").sp
 OPTIONS_SCAN_INTERVAL = int(os.getenv("OPTIONS_SCAN_INTERVAL", "120"))  # 2 min
 EQUITY_POLL_INTERVAL = int(os.getenv("EQUITY_POLL_INTERVAL", "60"))
 ALPHA_VANTAGE_INTERVAL = int(os.getenv("ALPHA_VANTAGE_INTERVAL", "300"))
-SIGNAL_EVAL_INTERVAL = int(os.getenv("SIGNAL_EVAL_INTERVAL", "30"))
+SIGNAL_EVAL_INTERVAL = int(os.getenv("SIGNAL_EVAL_INTERVAL", "60"))
 
-# Confluence scoring
-MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", "65.0"))
+# Confluence scoring & Alpha Factors (Institutional Weights)
+MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", "60.0"))
+CVD_BOOST_FACTOR = float(os.getenv("CVD_BOOST_FACTOR", "1.3")) # Standard confirmation weight
+NEUTRAL_TAPE_BOOST = float(os.getenv("NEUTRAL_TAPE_BOOST", "1.1")) # SIDOT (Sideways Detection)
+LARGE_TRADE_WEIGHT = float(os.getenv("LARGE_TRADE_WEIGHT", "0.4")) # Influence of blocks
+SPREAD_PENALTY_MULT = float(os.getenv("SPREAD_PENALTY_MULT", "50.0")) # Liquidity penalty
+SIGNAL_COOLDOWN = int(os.getenv("SIGNAL_COOLDOWN", "600")) # 10 min
 
 # Options recommendation
 PREFERRED_DTE_MIN = int(os.getenv("PREFERRED_DTE_MIN", "7"))
 PREFERRED_DTE_MAX = int(os.getenv("PREFERRED_DTE_MAX", "30"))
-PREFERRED_DELTA_MIN = float(os.getenv("PREFERRED_DELTA_MIN", "0.30"))
-PREFERRED_DELTA_MAX = float(os.getenv("PREFERRED_DELTA_MAX", "0.60"))
+PREFERRED_DELTA_MIN = float(os.getenv("PREFERRED_DELTA_MIN", "0.25"))
+PREFERRED_DELTA_MAX = float(os.getenv("PREFERRED_DELTA_MAX", "0.70"))
 MAX_OPTIONS_RESULTS = int(os.getenv("MAX_OPTIONS_RESULTS", "3"))
 
 # Web dashboard

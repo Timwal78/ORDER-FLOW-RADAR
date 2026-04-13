@@ -6,7 +6,8 @@ A production-ready trading signal system with **ZERO mock data**. Real API data 
 
 ## Key Principles
 
-- **Real Data Only**: No mock data, demo mode, or fake fallbacks. If an API call fails, skip that symbol and move on.
+- **Real Data Only**: No mock data, demo mode, or fake fallbacks. This is governed by the [AGENT_LAW.md](file:///C:/Users/timot/.gemini/antigravity/scratch/order-flow-radar/AGENT_LAW.md) which serves as the repository constitution.
+- **Institutional Cadence**: Evaluation and alerts are performed on a 5-minute institutional window to ensure signal stability.
 - **Dynamic Discovery**: Scan the entire market by fetching most-active symbols from APIs every hour.
 - **Quality Filtering**: Only qualified signals (confluence score ≥ threshold) reach the dashboard and Discord.
 - **Learning AI**: Tracks signal outcomes (TP1, TP2, SL) and adjusts confluence weights to improve future signals.

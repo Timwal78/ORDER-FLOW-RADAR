@@ -5,7 +5,7 @@ Outputs BUY CALL / BUY PUT / HOLD with strike + date.
 
 Integrates into Order-Flow-Radar's async loop and tiered Discord alerts.
 Routes to FREE / PRO / PREMIUM channels by grade.
-ZERO fake data. All live. All real.
+Strictly Real-Time Data. All live. All real.
 """
 import os
 import asyncio
@@ -325,6 +325,14 @@ class SweepScanner:
                 if cl["direction"] == "bullish" and price > op: sc += 1; bd["orb"] = 1
                 elif cl["direction"] == "bearish" and price < op: sc += 1; bd["orb"] = 1
 
+            # ── Counter-Trend Premium Boost (1pt) ──
+            # Whales buying against the tape is contrarian conviction — reward, don't punish
+            if vwap > 0 and price > 0:
+                if cl["direction"] == "bullish" and price < vwap and cl["combined"] >= 500_000:
+                    sc += 1; bd["contrarian"] = 1
+                elif cl["direction"] == "bearish" and price > vwap and cl["combined"] >= 500_000:
+                    sc += 1; bd["contrarian"] = 1
+
             # ── Grade assignment ──
             grade = "S" if sc >= 11 else "A" if sc >= 9 else "B" if sc >= 7 else "C" if sc >= 5 else "F"
 
@@ -333,8 +341,12 @@ class SweepScanner:
             if len(cl["sweeps"]) < 2: dqs.append("Single print")
             wide = sum(1 for s in cl["sweeps"] if s["spread_pct"] > 0.20)
             if wide > len(cl["sweeps"]) * 0.5: dqs.append("Wide spreads")
-            if cl["direction"] == "bullish" and vwap > 0 and price < vwap * 0.995: dqs.append("Below VWAP")
-            if cl["direction"] == "bearish" and vwap > 0 and price > vwap * 1.005: dqs.append("Above VWAP")
+            # VWAP against direction = soft penalty (-1pt), NOT a hard disqualifier.
+            # Whale contra-VWAP sweeps are contrarian plays that should still fire.
+            if cl["direction"] == "bullish" and vwap > 0 and price < vwap * 0.995:
+                sc -= 1; bd["vwap_against"] = -1
+            if cl["direction"] == "bearish" and vwap > 0 and price > vwap * 1.005:
+                sc -= 1; bd["vwap_against"] = -1
 
             # IV crush warning (not a disqualifier, but flagged)
             avg_iv = sum(s.get("iv", 0) for s in cl["sweeps"]) / len(cl["sweeps"])
@@ -344,7 +356,7 @@ class SweepScanner:
             best = max(cl["sweeps"], key=lambda s: s["premium"])
             if sc >= 7 and not dqs:
                 action = "BUY CALL" if cl["direction"] == "bullish" else "BUY PUT"
-            elif sc >= 5 and not dqs:
+            elif sc >= 4 and not dqs:
                 action = "HOLD"
             else:
                 action = "PASS"

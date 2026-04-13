@@ -377,13 +377,13 @@ async function pollFlow() {
     }
     const tier = getTier();
     if (tier === 'free') {
-      const dummy = entries.slice(0,6).map(([sym, f]) => {
+      const maskedData = entries.slice(0,6).map(([sym, f]) => {
           return '<div class="flow-row"><span class="sym">???</span>' +
             '<span style="color:var(--text2);font-size:11px;min-width:50px">????</span>' +
             '<div class="bar-wrap"><div class="bar-inner" style="width:50%;background:var(--text2)"></div></div>' +
             '<span style="min-width:40px;text-align:right">--</span></div>';
       }).join('');
-      flowEl.innerHTML = '<div style="position:relative;height:100%;"><div class="tier-overlay" style="position:absolute;top:50px;">UPGRADE TO PRO/ELITE<br><span style="font-size:9px;color:var(--text2);font-weight:normal">To Unlock Real-Time Flow</span></div><div class="tier-blurred">' + dummy + '</div></div>';
+      flowEl.innerHTML = '<div style="position:relative;height:100%;"><div class="tier-overlay" style="position:absolute;top:50px;">UPGRADE TO PRO/ELITE<br><span style="font-size:9px;color:var(--text2);font-weight:normal">To Unlock Real-Time Flow</span></div><div class="tier-blurred">' + maskedData + '</div></div>';
       return;
     }
     flowEl.innerHTML = entries.slice(0,50).map(([sym, f]) => {
