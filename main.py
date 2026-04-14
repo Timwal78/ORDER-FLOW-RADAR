@@ -199,13 +199,59 @@ async def rest_snapshot_loop():
                                 latest_trade = snap.get("latestTrade", {})
                                 min_bar = snap.get("minuteBar", {})
                                 daily_bar = snap.get("dailyBar", {})
+                                prev_daily = snap.get("prevDailyBar", {})
                                 
                                 price = latest_trade.get("p") or min_bar.get("c") or daily_bar.get("c") or 0
                                 if price > 0:
                                     if state.last_price == 0:
-                                        state.last_price = price
                                         total_injected += 1
+                                    state.last_price = price
                                         
+                                # ── CRITICAL: Inject REAL volume into buy/sell ──
+                                # Without this, Discord shows "0 buys 0 sells" for every ticker
+                                # because the websocket rarely delivers individual trades for 3000+ symbols.
+                                # Use tick rule on bar data: close > prevClose = net buy, else net sell.
+                                bar_vol = daily_bar.get("v", 0) or 0
+                                min_vol = min_bar.get("v", 0) or 0
+                                
+                                if bar_vol > 0 and state.total_volume == 0:
+                                    # First time seeing this symbol — seed with daily bar volume
+                                    prev_close = prev_daily.get("c", 0) or daily_bar.get("o", 0) or 0
+                                    bar_close = daily_bar.get("c", 0) or price
+                                    
+                                    if prev_close > 0 and bar_close > 0:
+                                        # Tick rule: if price went up, net buying; down, net selling
+                                        if bar_close >= prev_close:
+                                            # Bullish day — allocate proportionally
+                                            move_pct = min((bar_close - prev_close) / prev_close, 0.10)
+                                            buy_ratio = 0.50 + (move_pct * 5.0)  # 50-100% buy
+                                            buy_ratio = min(0.85, max(0.50, buy_ratio))
+                                        else:
+                                            move_pct = min((prev_close - bar_close) / prev_close, 0.10)
+                                            buy_ratio = 0.50 - (move_pct * 5.0)  # 0-50% buy
+                                            buy_ratio = max(0.15, min(0.50, buy_ratio))
+                                    else:
+                                        buy_ratio = 0.50
+                                    
+                                    state.buy_volume = int(bar_vol * buy_ratio)
+                                    state.sell_volume = int(bar_vol * (1 - buy_ratio))
+                                    state.total_volume = bar_vol
+                                    # Seed CVD from the split
+                                    state.cvd = float(state.buy_volume - state.sell_volume)
+                                
+                                elif min_vol > 0 and state.total_volume > 0:
+                                    # Incremental update from minute bar
+                                    min_open = min_bar.get("o", 0) or 0
+                                    min_close = min_bar.get("c", 0) or price
+                                    if min_open > 0 and min_close > 0:
+                                        if min_close >= min_open:
+                                            state.buy_volume += min_vol
+                                            state.cvd += min_vol
+                                        else:
+                                            state.sell_volume += min_vol
+                                            state.cvd -= min_vol
+                                        state.total_volume += min_vol
+
                                 # Process Quote
                                 latest_quote = snap.get("latestQuote", {})
                                 bp = latest_quote.get("bp", 0)

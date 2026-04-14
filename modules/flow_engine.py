@@ -7,6 +7,8 @@ import time
 import logging
 from collections import defaultdict, deque
 
+import config
+
 logger = logging.getLogger("flow")
 
 

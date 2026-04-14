@@ -52,7 +52,7 @@ class SweepScanner:
         self._alert_count = 0  # Track for preview drops to free tier
 
     async def run_scan(self, universe_symbols: list,
-                       price_min=1, price_max=100,
+                       price_min=2, price_max=500,
                        min_premium=150_000, dte_min=2, dte_max=14,
                        min_score=5):
         """
