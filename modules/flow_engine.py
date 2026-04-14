@@ -174,8 +174,6 @@ class FlowEngine:
                 "spread": round(state.spread, 4),
                 "spread_score": round(spread_score, 1),
                 "total_volume": state.total_volume,
-                "buy_vol": state.buy_volume,
-                "sell_vol": state.sell_volume,
             },
         }
 

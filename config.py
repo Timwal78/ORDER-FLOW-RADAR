@@ -24,7 +24,8 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 # SCANNER SETTINGS
 # =============================================================================
 # Large-cap filter: skip tickers with market cap > this (avoids AAPL/MSFT/GOOG flood)
-LARGE_CAP_CEILING = float(os.getenv("LARGE_CAP_CEILING", "10e12"))  # 10T (Uncapped for high-caps)
+# Relying on alert throttle in sweep_scanner instead of hard exclusion.
+LARGE_CAP_CEILING = float(os.getenv("LARGE_CAP_CEILING", "2e12"))  # 2T default (includes NVDA/AMZN/META)
 # Min market cap to avoid penny stock noise
 MIN_MARKET_CAP = float(os.getenv("MIN_MARKET_CAP", "100e6"))  # 100M min
 # Always-scan tickers regardless of cap filters

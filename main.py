@@ -186,12 +186,16 @@ async def rest_snapshot_loop():
                     sym_str = ",".join(batch)
                     
                     # Using the efficient snapshots endpoint (combines trades + quotes)
+                    # OMIT 'feed': 'iex' to use the best available feed (SIP for customers)
                     url = "https://data.alpaca.markets/v2/stocks/snapshots"
                     async with session.get(url, headers=headers,
-                                           params={"symbols": sym_str, "feed": "iex"},
+                                           params={"symbols": sym_str},
                                            timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
+                            if not data:
+                                continue
+                            
                             for sym, snap in data.items():
                                 state = flow.get_state(sym)
                                 
@@ -200,6 +204,7 @@ async def rest_snapshot_loop():
                                 min_bar = snap.get("minuteBar", {})
                                 daily_bar = snap.get("dailyBar", {})
                                 prev_daily = snap.get("prevDailyBar", {})
+                                bar_vol = daily_bar.get("v", 0) or 0
                                 
                                 price = latest_trade.get("p") or min_bar.get("c") or daily_bar.get("c") or 0
                                 if price > 0:
@@ -207,50 +212,35 @@ async def rest_snapshot_loop():
                                         total_injected += 1
                                     state.last_price = price
                                         
-                                # ── CRITICAL: Inject REAL volume into buy/sell ──
-                                # Without this, Discord shows "0 buys 0 sells" for every ticker
-                                # because the websocket rarely delivers individual trades for 3000+ symbols.
-                                # Use tick rule on bar data: close > prevClose = net buy, else net sell.
-                                bar_vol = daily_bar.get("v", 0) or 0
-                                min_vol = min_bar.get("v", 0) or 0
-                                
-                                if bar_vol > 0 and state.total_volume == 0:
-                                    # First time seeing this symbol — seed with daily bar volume
+                                # ── CRITICAL: Inject/Update REAL volume into flow states ──
+                                # If bar_vol has increased since last check, update the state.
+                                if bar_vol > state.total_volume:
+                                    diff = bar_vol - state.total_volume
+                                    
+                                    # Estimate split based on price relative to prev close
                                     prev_close = prev_daily.get("c", 0) or daily_bar.get("o", 0) or 0
                                     bar_close = daily_bar.get("c", 0) or price
                                     
                                     if prev_close > 0 and bar_close > 0:
-                                        # Tick rule: if price went up, net buying; down, net selling
                                         if bar_close >= prev_close:
-                                            # Bullish day — allocate proportionally
-                                            move_pct = min((bar_close - prev_close) / prev_close, 0.10)
-                                            buy_ratio = 0.50 + (move_pct * 5.0)  # 50-100% buy
-                                            buy_ratio = min(0.85, max(0.50, buy_ratio))
+                                            # Bullish movement -> allocate 70/30 buy/sell
+                                            buy_ratio = 0.70
                                         else:
-                                            move_pct = min((prev_close - bar_close) / prev_close, 0.10)
-                                            buy_ratio = 0.50 - (move_pct * 5.0)  # 0-50% buy
-                                            buy_ratio = max(0.15, min(0.50, buy_ratio))
+                                            buy_ratio = 0.30
                                     else:
                                         buy_ratio = 0.50
                                     
-                                    state.buy_volume = int(bar_vol * buy_ratio)
-                                    state.sell_volume = int(bar_vol * (1 - buy_ratio))
+                                    # Update volumes
+                                    added_buy = int(diff * buy_ratio)
+                                    added_sell = diff - added_buy
+                                    
+                                    state.buy_volume += added_buy
+                                    state.sell_volume += added_sell
                                     state.total_volume = bar_vol
-                                    # Seed CVD from the split
-                                    state.cvd = float(state.buy_volume - state.sell_volume)
-                                
-                                elif min_vol > 0 and state.total_volume > 0:
-                                    # Incremental update from minute bar
-                                    min_open = min_bar.get("o", 0) or 0
-                                    min_close = min_bar.get("c", 0) or price
-                                    if min_open > 0 and min_close > 0:
-                                        if min_close >= min_open:
-                                            state.buy_volume += min_vol
-                                            state.cvd += min_vol
-                                        else:
-                                            state.sell_volume += min_vol
-                                            state.cvd -= min_vol
-                                        state.total_volume += min_vol
+                                    state.cvd += float(added_buy - added_sell)
+                                    
+                                    if state.last_price == 0:
+                                        total_injected += 1
 
                                 # Process Quote
                                 latest_quote = snap.get("latestQuote", {})
@@ -262,6 +252,11 @@ async def rest_snapshot_loop():
                                     state.ask = ap
                                 if bp > 0 and ap > 0:
                                     state.spread = ap - bp
+
+                        else:
+                            text = await resp.text()
+                            logger.error(f"Snapshot loop Error {resp.status}: {text[:100]}")
+                            break # Bail from this batch on error
 
                     await asyncio.sleep(0.1) # Small delay to not anger Alpaca API
                     

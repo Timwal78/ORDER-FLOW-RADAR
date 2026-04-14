@@ -199,10 +199,10 @@ class DiscordAlerter:
         embed["fields"].append({
             "name": "📈 Flow",
             "value": (
-                f"**Net Buy:** {flow.get('buy_vol', 0):,.0f}\n"
-                f"**Net Sell:** {flow.get('sell_vol', 0):,.0f}\n"
-                f"**Buy %:** {flow.get('buy_pct', 0):.0f}% | "
-                f"**CVD:** {flow.get('cvd', 0):,.0f}"
+                f"**Buy:** {flow.get('buy_pct', 0):.0f}%\n"
+                f"**CVD:** {flow.get('cvd', 0):,.0f}\n"
+                f"**Lg Buys:** {flow.get('large_buys', 0)} | "
+                f"**Sells:** {flow.get('large_sells', 0)}"
             ),
             "inline": True,
         })

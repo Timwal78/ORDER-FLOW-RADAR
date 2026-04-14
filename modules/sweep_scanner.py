@@ -64,7 +64,7 @@ class SweepScanner:
 
     async def run_scan(self, universe_symbols: list,
                        price_min=2, price_max=500,
-                       min_premium=150_000, dte_min=2, dte_max=14,
+                       min_premium=100_000, dte_min=2, dte_max=14,
                        min_score=5):
         """
         Full sweep scan cycle. Called from the main OFR loop.
@@ -244,7 +244,8 @@ class SweepScanner:
                             continue
                         otm_pct = ((strike - price) / price) if side_label == "call" else ((price - strike) / price)
                         otm_max = 0.03 if is_etf else 0.05
-                        if otm_pct < -0.005 or otm_pct > otm_max:
+                        # Allow up to 5% ITM (was -0.5% too tight) and up to 5% OTM
+                        if otm_pct < -0.05 or otm_pct > otm_max:
                             continue
 
                         premium = volume * last_price * 100
