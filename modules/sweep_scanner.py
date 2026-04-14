@@ -33,6 +33,17 @@ ETFS = {
     "GDXJ","KRE","XBI","XOP","JETS","BITO","MSOS","SOXL","SOXS","LABU",
 }
 
+# Mega-caps that generate too much noise if uncapped.
+# They get SCANNED (so we don't miss real whale plays), but
+# only MAX_MEGA_CAP_ALERTS fire per scan cycle to avoid flooding Discord.
+MEGA_CAPS = {
+    'AAPL', 'MSFT', 'GOOG', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA',
+    'LLY', 'V', 'MA', 'AVGO', 'HD', 'COST', 'JPM', 'UNH', 'WMT',
+    'BAC', 'XOM', 'CVX', 'PG', 'ORCL', 'ABBV', 'CRM', 'ADBE', 'NFLX',
+    'BRK.B', 'JNJ', 'MRK', 'PEP', 'KO', 'TMO', 'CSCO', 'ACN',
+}
+MAX_MEGA_CAP_ALERTS = 2  # Max mega-cap signals per scan cycle
+
 
 class SweepScanner:
     """Institutional sweep detection engine for Order-Flow-Radar."""
@@ -78,6 +89,7 @@ class SweepScanner:
         logger.info(f"Sweep scanning {len(scan_targets)} tickers (${price_min}-${price_max})")
 
         qualified = []
+        mega_cap_count = 0  # Throttle mega-cap alerts to avoid AAPL/TSLA flood
         for i, (symbol, price) in enumerate(scan_targets[:80]):  # Cap at 80 per cycle
             try:
                 sweeps = await self._scan_chain(symbol, price, dte_min, dte_max, min_premium)
@@ -101,6 +113,17 @@ class SweepScanner:
                                 cl["earnings_flag"] = True
                                 cl["earnings_days"] = days_until
                                 logger.info(f"  ** EARNINGS in {days_until}d for {cl['ticker']}!")
+
+                        # Mega-cap throttle: scan all, but limit Discord alerts
+                        is_mega = cl["ticker"] in MEGA_CAPS
+                        if is_mega and mega_cap_count >= MAX_MEGA_CAP_ALERTS:
+                            logger.info(f"  >> THROTTLED mega-cap {cl['ticker']} (already {mega_cap_count} this cycle)")
+                            # Still log to journal + paper, just skip Discord
+                            if self.journal:
+                                self.journal.log_signal(cl)
+                            continue
+                        if is_mega:
+                            mega_cap_count += 1
 
                         qualified.append(cl)
                         logger.info(f"  >> {cl['action']} {cl['contract']} [{cl['grade']}] "
