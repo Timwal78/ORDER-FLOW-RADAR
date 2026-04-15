@@ -10,7 +10,16 @@ import logging
 import aiohttp
 from typing import List
 
+import random
+
 logger = logging.getLogger("yfinance_api")
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
+]
 
 # Yahoo's predefined screener IDs
 GAINER_SCREENER = "day_gainers"
@@ -24,16 +33,18 @@ class YahooDiscovery:
     """
     def __init__(self):
         self._url = "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved"
-        self._headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
     
     async def get_top_movers(self, limit: int = 50) -> List[str]:
         """
         Combines Gainers, Losers, and Actives into a single scouting list.
         """
         discovered = set()
-        async with aiohttp.ClientSession(headers=self._headers) as session:
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "application/json",
+            "Referer": "https://finance.yahoo.com/gainers"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             # 1. Day Gainers
             discovered.update(await self._fetch_screener(session, GAINER_SCREENER, limit))
             # 2. Day Losers
