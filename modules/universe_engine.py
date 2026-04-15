@@ -72,6 +72,12 @@ class UniverseEngine:
         except Exception as e:
             logger.error(f"Polygon losers failed: {e}")
 
+        # ── Safety Fallback: Ensure discovery never returns just 2 symbols ────
+        if len(discovered) <= len(config.ALWAYS_SCAN) + 1:
+            safety_universe = ["SPY", "QQQ", "IWM", "TSLA", "NVDA", "AAPL", "AMD", "PLTR", "SOFI"]
+            logger.info(f"Discovery sources failed. Injecting safety universe: {safety_universe}")
+            discovered.update(safety_universe)
+
         # ── Sanitize: uppercase, strip, no empty strings ─────────────────────
         clean = sorted({s.strip().upper() for s in discovered if s and s.strip()})
 

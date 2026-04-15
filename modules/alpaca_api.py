@@ -201,15 +201,16 @@ class AlpacaAPI:
         """
         session = self._get_session()
         try:
+            # Shift to stable Data-V2 most-actives (Requires Market Data+ on some accounts)
             async with session.get(
-                f"{_REST_BASE}/v1beta1/screener/stocks/most-active",
+                f"{_REST_BASE}/v2/stocks/most-actives",
                 headers=self._headers,
                 params={"top": top, "by": "volume"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    stocks = data.get("most_active", [])
+                    stocks = data.get("most_actives", [])
                     api_health["alpaca_rest"] = "READY"
                     return [s["symbol"] for s in stocks if s.get("symbol")]
                 else:
