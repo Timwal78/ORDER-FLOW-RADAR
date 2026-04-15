@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # System Metadata
-# LAW 1.1: Verification string for build audits.
-SYSTEM_VERSION = "Inst-v1.3"
+# LAW 1.1: Verification string for build audits. (v1.3.1 Expansion Hardened)
+SYSTEM_VERSION = "Inst-v1.3.1"
 
 # =============================================================================
 # API KEYS — All from .env. No defaults. No fakes.
