@@ -73,9 +73,9 @@ class UniverseEngine:
             logger.error(f"Polygon losers failed: {e}")
 
         # ── Safety Fallback: Ensure discovery never returns just 2 symbols ────
-        if len(discovered) <= len(config.ALWAYS_SCAN) + 1:
+        if len(discovered) < 5:
             safety_universe = ["SPY", "QQQ", "IWM", "TSLA", "NVDA", "AAPL", "AMD", "PLTR", "SOFI"]
-            logger.info(f"Discovery sources failed. Injecting safety universe: {safety_universe}")
+            logger.info(f"Discovery sources failed or limited. Injecting safety universe: {safety_universe}")
             discovered.update(safety_universe)
 
         # ── Sanitize: uppercase, strip, no empty strings ─────────────────────
