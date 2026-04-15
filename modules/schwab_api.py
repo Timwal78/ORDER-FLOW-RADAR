@@ -49,6 +49,10 @@ class SchwabAPI:
         if self._access_token and time.time() < self._token_expires_at - 60:
             return True
 
+        return await self.refresh_tokens()
+
+    async def refresh_tokens(self) -> bool:
+        """Perform token refresh using refresh_token."""
         creds = base64.b64encode(
             f"{self._app_key}:{self._app_secret}".encode()
         ).decode()
@@ -62,15 +66,15 @@ class SchwabAPI:
                 data={
                     "grant_type":    "refresh_token",
                     "refresh_token": self._refresh_token,
-                    "redirect_uri":  self._redirect_uri,
                 },
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     self._access_token     = data["access_token"]
+                    self._refresh_token    = data.get("refresh_token", self._refresh_token)
                     self._token_expires_at = time.time() + data.get("expires_in", 1800)
-                    logger.info("Schwab token refreshed")
+                    logger.info("Schwab tokens refreshed")
                     return True
                 else:
                     body = await resp.text()
@@ -79,6 +83,46 @@ class SchwabAPI:
         except Exception as e:
             logger.error(f"Schwab token refresh error: {e}")
             return False
+
+    async def exchange_code(self, auth_code: str) -> Optional[Dict[str, Any]]:
+        """
+        Exchange an authorization code for initial tokens.
+        Mandatory first step for the Order Flow Radar institutional onboarding.
+        """
+        creds = base64.b64encode(
+            f"{self._app_key}:{self._app_secret}".encode()
+        ).decode()
+        
+        # Strip trailing @ if present from URL copying
+        auth_code = auth_code.strip().split("@")[0] + "@" if "@" in auth_code else auth_code.strip()
+
+        try:
+            async with self._get_session().post(
+                _AUTH_URL,
+                headers={
+                    "Authorization": f"Basic {creds}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data={
+                    "grant_type":   "authorization_code",
+                    "code":         auth_code,
+                    "redirect_uri": self._redirect_uri,
+                },
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                data = await resp.json()
+                if resp.status == 200:
+                    self._access_token     = data["access_token"]
+                    self._refresh_token    = data["refresh_token"]
+                    self._token_expires_at = time.time() + data.get("expires_in", 1800)
+                    logger.info("Schwab initial exchange successful")
+                    return data
+                else:
+                    logger.error(f"Schwab exchange failed {resp.status}: {data}")
+                    return None
+        except Exception as e:
+            logger.error(f"Schwab exchange error: {e}")
+            return None
 
     async def get_option_chain(self, symbol: str) -> Optional[Dict[str, Any]]:
         """

@@ -342,11 +342,25 @@
         async function updateHealth() {
             try {
                 const res = await fetch('/api/health');
-                const health = await res.json();
+                const data = await res.json();
+                const health = data.api;
                 apiStatusBar.innerHTML = Object.entries(health).map(([key, val]) => {
                     const color = val === 'CONNECTED' || val === 'READY' ? 'var(--green)' : 'var(--red)';
                     return `<div>${key.toUpperCase()}: <span style="color: ${color}">${val}</span></div>`;
                 }).join('');
+                
+                // Update Build Version in stats panel
+                let verEl = document.getElementById('system-version');
+                if (!verEl) {
+                    verEl = document.createElement('div');
+                    verEl.id = 'system-version';
+                    verEl.style.fontSize = '10px';
+                    verEl.style.opacity = '0.5';
+                    verEl.style.marginTop = '20px';
+                    verEl.style.textAlign = 'center';
+                    document.querySelector('.stats-panel').appendChild(verEl);
+                }
+                verEl.innerText = `BUILD: ${data.version}`;
             } catch (e) {}
         }
 
@@ -355,20 +369,20 @@
                 const res = await fetch('/api/snapshot');
                 const data = await res.json();
                 
-                // Sort by score desc
-                // data.sort((a, b) => b.score - a.score);
-
-                radarBody.innerHTML = data.map(s => `
-                    <tr>
+                radarBody.innerHTML = data.map(s => {
+                    const staleStyle = s.is_stale ? 'opacity: 0.3; filter: grayscale(1);' : '';
+                    return `
+                    <tr style="${staleStyle}">
                         <td class="symbol-cell">${s.symbol}</td>
                         <td class="price-cell">$${s.last_price.toFixed(2)}</td>
-                        <td class="action-cell">--</td>
-                        <td><span class="score-badge">FLOWING</span></td>
+                        <td class="action-cell">${s.is_stale ? 'STALE' : '--'}</td>
+                        <td><span class="score-badge">${s.is_stale ? 'WAITING' : 'FLOWING'}</span></td>
                         <td class="price-cell">${(s.cvd_ratio * 100).toFixed(0)}%</td>
                         <td class="price-cell">${(s.total_volume / 1000).toFixed(0)}K</td>
                         <td class="price-cell">${s.spread_pct.toFixed(3)}%</td>
                     </tr>
-                `).join('');
+                    `;
+                }).join('');
                 
                 document.getElementById('ticker-count').textContent = `${data.length} symbols active on tape`;
             } catch (e) {}

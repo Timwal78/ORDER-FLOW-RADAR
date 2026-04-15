@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Build Identification (v1.2 Hardening)
+SYSTEM_VERSION = "Inst-v1.2"
+
 # =============================================================================
 # API KEYS — All from .env. No defaults. No fakes.
 # =============================================================================
@@ -38,9 +41,10 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
 # SCANNER / UNIVERSE SETTINGS  (Law 2: labeled, config-driven)
 # =============================================================================
 # Always-scan: tickers monitored regardless of discovery results
+# Institutional Safety Net: SPY, QQQ, IWM added to ensure radar is never empty.
 ALWAYS_SCAN = [
     s.strip().upper()
-    for s in os.getenv("ALWAYS_SCAN", "AMC,GME").split(",")
+    for s in os.getenv("ALWAYS_SCAN", "AMC,GME,SPY,QQQ,IWM").split(",")
     if s.strip()
 ]
 
@@ -52,6 +56,10 @@ LARGE_CAP_CEILING = float(os.getenv("LARGE_CAP_CEILING", "2e12"))  # Cap at 2T; 
 # Polygon Free Tier: 5 calls/min limit. 
 # Selection: 60s refresh = 3 calls/min (gainers, losers, screener), leaving headroom.
 UNIVERSE_REFRESH_SECONDS = int(os.getenv("UNIVERSE_REFRESH_SECONDS", "60"))
+
+# Memory & State Safety (15 min TTL, 2 min Stale)
+TICKER_TTL_SECONDS      = int(os.getenv("TICKER_TTL_SECONDS", "900"))
+STALE_THRESHOLD_SECONDS = int(os.getenv("STALE_THRESHOLD_SECONDS", "120"))
 
 # =============================================================================
 # CONFLUENCE SCORING WEIGHTS  (Law 2: labeled with justification)

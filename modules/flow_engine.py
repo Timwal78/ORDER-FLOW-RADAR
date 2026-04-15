@@ -79,6 +79,14 @@ class TickerState:
             return 0.0
         return (self.spread / mid) * 100
 
+    @property
+    def is_stale(self) -> bool:
+        """True if no real-time trade has occurred within the stale threshold."""
+        if not self.last_trade_at:
+            return True
+        seconds = (datetime.utcnow() - self.last_trade_at).total_seconds()
+        return seconds > config.STALE_THRESHOLD_SECONDS
+
     def to_dict(self) -> dict:
         return {
             "symbol": self.symbol,
@@ -95,6 +103,7 @@ class TickerState:
             "large_buy_count": self.large_buy_count,
             "large_sell_count": self.large_sell_count,
             "last_trade_at": self.last_trade_at.isoformat() if self.last_trade_at else None,
+            "is_stale": self.is_stale,
         }
 
 
@@ -114,6 +123,29 @@ class FlowEngine:
         for sym in config.ALWAYS_SCAN:
             self.states[sym] = TickerState(symbol=sym)
         logger.info(f"FlowEngine initialized | Always-scan: {config.ALWAYS_SCAN}")
+
+    def prune_stale_tickers(self):
+        """
+        Prunes tickers with no trade activity for > TICKER_TTL_SECONDS.
+        Ensures memory stability during 'Open World' discovery.
+        ALWAYS_SCAN symbols are never pruned.
+        """
+        now = datetime.utcnow()
+        to_delete = []
+        for sym, state in self.states.items():
+            if sym in config.ALWAYS_SCAN:
+                continue
+            if not state.last_trade_at:
+                to_delete.append(sym)
+                continue
+            seconds = (now - state.last_trade_at).total_seconds()
+            if seconds > config.TICKER_TTL_SECONDS:
+                to_delete.append(sym)
+
+        for sym in to_delete:
+            del self.states[sym]
+        if to_delete:
+            logger.info(f"Pruned {len(to_delete)} stale symbols from memory pool.")
 
     def get_state(self, symbol: str) -> TickerState:
         if symbol not in self.states:

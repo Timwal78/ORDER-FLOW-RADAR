@@ -59,18 +59,26 @@ class UniverseEngine:
         # ── Source 2: Polygon gainers ────────────────────────────────────────
         try:
             gainers = await self._polygon.get_gainers()
-            logger.info(f"Polygon gainers: {len(gainers)} symbols")
-            discovered.update(gainers)
+            if gainers:
+                logger.info(f"Polygon gainers: {len(gainers)} symbols")
+                discovered.update(gainers)
         except Exception as e:
-            logger.error(f"Polygon gainers failed: {e}")
+            if "403" in str(e) or "not entitled" in str(e).lower():
+                logger.warning("Polygon logic: Snapshot feed restricted (403/Free Tier). Using safety discovery.")
+            else:
+                logger.error(f"Polygon gainers failed: {e}")
 
         # ── Source 3: Polygon losers ─────────────────────────────────────────
         try:
             losers = await self._polygon.get_losers()
-            logger.info(f"Polygon losers: {len(losers)} symbols")
-            discovered.update(losers)
+            if losers:
+                logger.info(f"Polygon losers: {len(losers)} symbols")
+                discovered.update(losers)
         except Exception as e:
-            logger.error(f"Polygon losers failed: {e}")
+            if "403" in str(e) or "not entitled" in str(e).lower():
+                pass # Already logged in gainers
+            else:
+                logger.error(f"Polygon losers failed: {e}")
 
         # ── Safety Fallback: Ensure discovery never returns just 2 symbols ────
         if len(discovered) < 5:

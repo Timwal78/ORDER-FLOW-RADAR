@@ -44,7 +44,11 @@ _signal_queue = asyncio.Queue()
 
 @app.get("/api/health")
 async def get_health():
-    return api_health
+    # Return both API connectivity and the current Build Version
+    return {
+        "api": api_health,
+        "version": getattr(app.state, "SYSTEM_VERSION", "v1.1-legacy")
+    }
 
 
 def set_engines(confluence, flow, universe, discord, journal):

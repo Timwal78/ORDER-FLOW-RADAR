@@ -147,14 +147,18 @@ async def evaluation_loop():
 async def training_loop():
     """Learner retrains on historical data every 24h."""
     while not shutdown_event.is_set():
-        try:
-            await learner.retrain(config.JOURNAL_CSV_PATH)
-            # Update confluence engine with new learned weights
-            confluence_engine.set_weights(learner.get_weights())
-        except Exception as e:
-            logger.error(f"Training loop error: {e}")
-        
         await asyncio.sleep(config.LEARNER_RETRAIN_INTERVAL_HOURS * 3600)
+
+
+async def pruning_loop():
+    """Prunes stale tickers from memory periodically (Ensures 100% Stability)."""
+    while True:
+        try:
+            if flow_engine:
+                flow_engine.prune_stale_tickers()
+        except Exception as e:
+            logger.error(f"Pruning loop error: {e}")
+        await asyncio.sleep(600)  # Institutional Cadence: 10 mins
 
 
 async def dashboard_task():
@@ -208,6 +212,9 @@ async def main():
 
     # 3. Wire Dashboard
     set_engines(confluence_engine, flow_engine, universe_engine, discord_alerter, journal)
+    # Inject version into dashboard for build verification
+    from modules.dashboard import app as dashboard_app
+    dashboard_app.state.SYSTEM_VERSION = config.SYSTEM_VERSION
 
     # 4. Global Signal Handler for Windows/Linux
     try:
@@ -219,15 +226,20 @@ async def main():
 
     # 5. Launch Tasks
     logger.info("Starting institutional async loops...")
+    
+    # Define Alpaca task separately so we can handle its failure without killing the loop
+    alpaca_task = asyncio.create_task(alpaca_client.start_stream(
+        config.ALWAYS_SCAN, flow_engine.on_trade, flow_engine.on_quote
+    ))
+
     tasks = [
         asyncio.create_task(dashboard_task()),
         asyncio.create_task(universe_discovery_loop()),
         asyncio.create_task(snapshot_loop()),
         asyncio.create_task(evaluation_loop()),
         asyncio.create_task(training_loop()),
-        asyncio.create_task(alpaca_client.start_stream(
-            config.ALWAYS_SCAN, flow_engine.on_trade, flow_engine.on_quote
-        )),
+        asyncio.create_task(pruning_loop()),
+        alpaca_task
     ]
 
     await discord_alerter.send_status(

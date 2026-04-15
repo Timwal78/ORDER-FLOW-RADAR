@@ -19,7 +19,7 @@ import config
 
 logger = logging.getLogger("alpaca_api")
 
-_WS_URL_STOCKS = "wss://stream.data.alpaca.markets/v2/iex"
+_WS_URL_STOCKS = "wss://stream.data.alpaca.markets/v2/sip" # Updated to SIP for broader entitlement compatibility
 _REST_BASE      = "https://data.alpaca.markets"
 _BROKER_BASE    = "https://api.alpaca.markets"
 
@@ -135,7 +135,18 @@ class AlpacaAPI:
                 self._on_quote(sym, bid, ask)
 
         elif t == "error":
-            logger.error(f"Alpaca WS error: {msg}")
+            code = msg.get("code")
+            error_msg = msg.get("msg")
+            
+            if code == 406:
+                logger.error("ALpaca Critical: Connection limit exceeded (406). Multiple sessions detected.")
+                logger.error("System will pause to allow remote socket cooldown.")
+                self._running = False # Stop loop to prevent thrashing Alpaca
+            elif code == 401:
+                logger.error("Alpaca Critical: Authentication failed (401). Check keys and environment (Live vs Paper).")
+                self._running = False
+            else:
+                logger.error(f"Alpaca WS error: {msg}")
 
     async def update_subscription(self, symbols: List[str]):
         """Update WebSocket subscription when universe changes."""
