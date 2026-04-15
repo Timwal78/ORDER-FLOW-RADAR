@@ -148,14 +148,20 @@ class ConfluenceEngine:
             bear_score += pts * (1 if bear_score > bull_score else 0)
             confluences.append(f"HIGH_VOL ({state.total_volume:,})")
 
-        # ── Determine direction ────────────────────────────────────────────────
+        # ── Intelligence Layer: IEX Normalization (Boost for Standard Tiers) ──
+        # Justification: IEX is 10% of total volume; we normalize to reach "A/B" grades.
+        score_multiplier = 1.0
+        if config.ALPACA_FEED == "iex":
+            score_multiplier = 1.5
+            
         if bull_score > bear_score:
-            direction, score = "LONG", bull_score
+            direction, score = "LONG", bull_score * score_multiplier
         elif bear_score > bull_score:
-            direction, score = "SHORT", bear_score
+            direction, score = "SHORT", bear_score * score_multiplier
         else:
             return None
 
+        # Apply final Institutional Gate
         if score < config.MIN_CONFLUENCE_SCORE:
             return None
 

@@ -78,7 +78,37 @@ class AlpacaAPI:
                 await self._connect_and_stream(symbols)
             except Exception as e:
                 logger.error(f"Stream error: {e}. Reconnecting in 5s...")
+                api_health["alpaca_ws"] = "ERROR"
                 await asyncio.sleep(5)
+
+    async def update_subscriptions(self, symbols: List[str]):
+        """
+        Dynamically update WebSocket subscriptions without disconnecting.
+        Fulfillment of 'Tiered Radar' requirement for v1.3.
+        """
+        if not self._ws or not self._running:
+            return
+            
+        to_sub = set(symbols) - self._subscribed
+        to_unsub = self._subscribed - set(symbols)
+        
+        if to_unsub:
+            await self._ws.send(json.dumps({
+                "action": "unsubscribe",
+                "trades": list(to_unsub),
+                "quotes": list(to_unsub)
+            }))
+            logger.info(f"Unsubscribed from {len(to_unsub)} symbols")
+            
+        if to_sub:
+            await self._ws.send(json.dumps({
+                "action": "subscribe",
+                "trades": list(to_sub),
+                "quotes": list(to_sub)
+            }))
+            logger.info(f"Subscribed to {len(to_sub)} new symbols")
+            
+        self._subscribed = set(symbols)
 
     async def _connect_and_stream(self, symbols: List[str]):
         import websockets
@@ -199,7 +229,7 @@ class AlpacaAPI:
                 async with session.get(
                     f"{_REST_BASE}/v2/stocks/snapshots",
                     headers=self._headers,
-                    params={"symbols": ",".join(batch)},
+                    params={"symbols": ",".join(batch), "feed": "iex"},
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:

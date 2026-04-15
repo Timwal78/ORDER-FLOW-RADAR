@@ -39,6 +39,7 @@ class AIAuditor:
         Price: {signal_data['price']}
         
         Is this a high-probability institutional setup or a potential trap/noise?
+        Note: The current feed is IEX (Standard), so reported volumes represent ~10-15% of total market activity. Adjust your scoring accordingly.
         Consider if the CVD ratio aligns with the action.
         
         Return JSON ONLY:

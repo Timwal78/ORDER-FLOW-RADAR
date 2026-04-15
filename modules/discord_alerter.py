@@ -24,24 +24,64 @@ class DiscordAlerter:
             "premium": config.DISCORD_WEBHOOK_PREMIUM,
         }
         self._session: Optional[aiohttp.ClientSession] = None
-        self._lock = asyncio.Semaphore(5)  # Max 5 concurrent Discord calls
+        self._queue = asyncio.Queue()
+        self._worker_task: Optional[asyncio.Task] = None
+        self._running = True
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         return self._session
 
+    async def _worker(self):
+        """Background worker that releases alerts sequentially to avoid 429s."""
+        logger.info("Discord worker started (Meter: 1.5s delay)")
+        while self._running:
+            try:
+                url, payload = await self._queue.get()
+                
+                # Send with retry logic
+                await self._send_raw_guaranteed(url, payload)
+                
+                # Mandatory inter-message delay (Headroom for external hooks like SqueezeOS)
+                await asyncio.sleep(1.5)
+                self._queue.task_done()
+            except Exception as e:
+                logger.error(f"Discord worker error: {e}")
+                await asyncio.sleep(1)
+
+    async def _send_raw_guaranteed(self, url: str, payload: dict):
+        """Attempts to send with exponential backoff on 429."""
+        retries = 0
+        while retries < 3:
+            async with self._get_session().post(url, json=payload, timeout=10) as resp:
+                if resp.status == 429:
+                    retry_after = float(resp.headers.get("Retry-After", 5))
+                    logger.warning(f"Discord 429 on {url[:30]}! Sleeping {retry_after}s...")
+                    await asyncio.sleep(retry_after + 0.5)
+                    retries += 1
+                elif resp.status not in (200, 204):
+                    body = await resp.text()
+                    logger.error(f"Discord error {resp.status}: {body[:100]}")
+                    break
+                else:
+                    return # Success
+        logger.error(f"Gave up on Discord message after {retries} retries.")
+
     async def send_status(self, text: str):
-        """Send a simple system status message to all configured webhooks."""
+        """Queue a status message for all hooks."""
+        if not self._worker_task:
+            self._worker_task = asyncio.create_task(self._worker())
+            
         for tier, url in self._hooks.items():
             if url:
-                await self._send_raw(url, {"content": text})
+                self._queue.put_nowait((url, {"content": text}))
 
     async def send_signal(self, sig: dict, tier: str = "premium"):
-        """
-        Send a formatted signal alert to a specific tier.
-        Premium tier gets full options data. Free tier gets summary.
-        """
+        """Queue a signal for a specific tier."""
+        if not self._worker_task:
+            self._worker_task = asyncio.create_task(self._worker())
+
         url = self._hooks.get(tier)
         if not url:
             return
@@ -49,11 +89,10 @@ class DiscordAlerter:
         embed = self._build_embed(sig, tier)
         payload = {"embeds": [embed]}
         
-        # Free tier gets a "Upgrade" footer
         if tier == "free":
             payload["content"] = "🔓 *Partial signal. Join Pro/Premium for real-time institutional flow.*"
 
-        await self._send_raw(url, payload)
+        self._queue.put_nowait((url, payload))
 
     def _build_embed(self, sig: dict, tier: str) -> dict:
         color = 0x00FF00 if sig["action"] == "LONG" else 0xFF0000
@@ -78,6 +117,14 @@ class DiscordAlerter:
             "inline": False
         })
 
+        # Add AI Audit if present
+        if sig.get("ai_auditor_reason"):
+            embed["fields"].append({
+                "name": "🤖 Institutional AI Auditor",
+                "value": f"*{sig['ai_auditor_reason']}*",
+                "inline": False
+            })
+
         # Add options recommendations (Premium only)
         if tier == "premium" and sig.get("options_recs"):
             rec_lines = []
@@ -94,18 +141,9 @@ class DiscordAlerter:
 
         return embed
 
-    async def _send_raw(self, url: str, payload: dict):
-        async with self._lock:
-            try:
-                async with self._get_session().post(url, json=payload, timeout=10) as resp:
-                    if resp.status not in (200, 204):
-                        body = await resp.text()
-                        logger.error(f"Discord error {resp.status} on {url[:40]}...: {body[:100]}")
-                    # Law-compliant spacing to avoid 429 flood
-                    await asyncio.sleep(0.5) 
-            except Exception as e:
-                logger.error(f"Discord request error: {e}")
-
     async def close(self):
+        self._running = False
+        if self._worker_task:
+            self._worker_task.cancel()
         if self._session and not self._session.closed:
             await self._session.close()

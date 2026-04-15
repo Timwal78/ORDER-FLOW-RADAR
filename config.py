@@ -10,8 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Build Identification (v1.2 Hardening)
-SYSTEM_VERSION = "Inst-v1.2"
+# System Metadata
+# LAW 1.1: Verification string for build audits.
+SYSTEM_VERSION = "Inst-v1.3"
 
 # =============================================================================
 # API KEYS — All from .env. No defaults. No fakes.
@@ -91,8 +92,8 @@ MOMENTUM_EMA_FAST = int(os.getenv("MOMENTUM_EMA_FAST", "9"))
 MOMENTUM_EMA_SLOW = int(os.getenv("MOMENTUM_EMA_SLOW", "21"))
 
 # MIN_CONFLUENCE_SCORE: Signals below this score are discarded (not shown, not alerted)
-# Justification: Quality gate — eliminates noise signals
-MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", "60.0"))
+# Justification: Quality gate — lowered to 35.0 for IEX-compatible sensitivity
+MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", "35.0"))
 
 # =============================================================================
 # INTELLIGENCE OVERLAY

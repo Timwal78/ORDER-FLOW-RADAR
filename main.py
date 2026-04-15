@@ -84,14 +84,22 @@ def check_startup_keys():
 # =============================================================================
 
 async def universe_discovery_loop():
-    """Manifesto Rule 2: Dynamic discovery, no slice limits. Every 5 min."""
+    """
+    Manifesto Rule 2: Dynamic discovery.
+    Expansion v1.3: Scouting 100 symbols, Radar-Tiering Top 30.
+    """
     while not shutdown_event.is_set():
         try:
-            symbols = await universe_engine.build()
-            logger.info(f"Loop: Universe refreshed. {len(symbols)} tickers active.")
+            # 1. Scout 100 tickers from all sources (Alpaca/Polygon/Yahoo)
+            all_symbols = await universe_engine.build()
             
-            # Update WebSocket subscription with new tickers
-            await alpaca_client.update_subscription(symbols[:1000]) # IEX limit check
+            # 2. Determine Tier-1 Radar Priority (Top 30 streaming limit)
+            radar_symbols = universe_engine.get_radar_priority(all_symbols, limit=30)
+            
+            logger.info(f"Loop: Universe Scouted (100). Radar Active ({len(radar_symbols)}).")
+            
+            # 3. Rotate WebSocket subscriptions to stay under Free-Tier limit
+            await alpaca_client.update_subscriptions(radar_symbols)
         except Exception as e:
             logger.error(f"Universe discovery loop failed: {e}")
         
