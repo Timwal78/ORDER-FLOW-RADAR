@@ -202,7 +202,7 @@ class AlpacaAPI:
         session = self._get_session()
         try:
             async with session.get(
-                f"{_BROKER_BASE}/v1beta1/screener/stocks/most-active",
+                f"{_REST_BASE}/v1beta1/screener/stocks/most-active",
                 headers=self._headers,
                 params={"top": top, "by": "volume"},
                 timeout=aiohttp.ClientTimeout(total=10),
