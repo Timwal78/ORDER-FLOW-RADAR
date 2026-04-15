@@ -1,449 +1,412 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Order-Flow-Radar™ | ScriptMasterLabs™</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{
-  --bg:#000;--bg2:#0a0a0a;--bg3:#111;--border:#1a1a1a;
-  --green:#00ff88;--pink:#ff2d78;--gold:#ffd700;--orange:#ff8c00;
-  --text:#e0e0e0;--text2:#888;--white:#fff;--cyan:#00e5ff;
-}
-body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px}
-.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;justify-content:space-between}
-.header h1{font-size:18px;color:var(--green);font-weight:700;letter-spacing:1px}
-.header .status{display:flex;align-items:center;gap:8px}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-.main{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;height:calc(100vh - 60px)}
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden;display:flex;flex-direction:column}
-.panel-header{padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;color:var(--gold);text-transform:uppercase;letter-spacing:1px;display:flex;justify-content:space-between;align-items:center}
-.panel-body{flex:1;overflow-y:auto;padding:8px}
-.signal-card{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px;border-left:3px solid var(--green)}
-.signal-card.bearish{border-left-color:var(--pink)}
-.signal-card .sym{font-size:16px;font-weight:700;color:var(--white)}
-.signal-card .action{font-size:13px;font-weight:600;margin-top:2px}
-.signal-card .action.bullish{color:var(--green)}
-.signal-card .action.bearish{color:var(--pink)}
-.signal-card .meta{font-size:11px;color:var(--text2);margin-top:4px;display:flex;gap:12px;flex-wrap:wrap}
-.signal-card .score-bar{height:4px;background:var(--bg);border-radius:2px;margin-top:6px;overflow:hidden}
-.signal-card .score-fill{height:100%;border-radius:2px;transition:width 0.5s}
-.opt-rec{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin-top:6px;font-size:12px}
-.opt-rec .strike{color:var(--gold);font-weight:700;font-size:14px}
-.opt-rec .details{color:var(--text2);margin-top:3px}
-.flow-row{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px}
-.flow-row:hover{background:var(--bg3)}
-.flow-row .sym{font-weight:600;color:var(--white);min-width:60px}
-.flow-row .bar-wrap{flex:1;margin:0 12px;height:6px;background:var(--bg);border-radius:3px;overflow:hidden}
-.flow-row .bar-inner{height:100%;border-radius:3px;transition:width 0.3s}
-.badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600}
-.badge-high{background:var(--green);color:#000}
-.badge-med{background:var(--gold);color:#000}
-.badge-low{background:var(--orange);color:#000}
-.badge-spec{background:var(--pink);color:#fff}
-.universe-info{padding:10px 14px;font-size:12px;color:var(--text2)}
-.empty{text-align:center;padding:40px;color:var(--text2);font-size:13px}
-#log{font-family:monospace;font-size:11px;padding:8px}
-#log div{padding:2px 0;border-bottom:1px solid var(--border)}
-#log .ts{color:var(--text2)}
-@media(max-width:768px){.main{grid-template-columns:1fr}}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Flow Radar™ | ScriptMasterLabs™</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0c;
+            --surface: rgba(255, 255, 255, 0.03);
+            --border: rgba(255, 255, 255, 0.08);
+            --gold: #d4af37;
+            --gold-bright: #f4cf57;
+            --green: #00ffa3;
+            --red: #ff3e3e;
+            --text-dim: #9ca3af;
+            --text-bright: #ffffff;
+            --font-main: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
 
-/* Status indicators */
-.api-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px}
-.api-item{display:flex;align-items:center;gap:6px;font-size:11px;padding:4px 8px;background:var(--bg3);border-radius:4px;border:1px solid var(--border)}
-.api-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.api-dot.ok{background:var(--green)}
-.api-dot.err{background:var(--pink)}
-.api-dot.warn{background:var(--orange)}
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            background-color: var(--bg);
+            color: var(--text-bright);
+            font-family: var(--font-main);
+            overflow: hidden;
+            height: 100vh;
+        }
 
-.status-banner{background:linear-gradient(135deg,#0a1a0a,#0a0a1a);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px}
-.status-banner h3{color:var(--cyan);font-size:13px;margin-bottom:6px}
-.status-banner .stat{display:flex;justify-content:space-between;font-size:12px;padding:2px 0}
-.status-banner .stat .val{color:var(--green);font-weight:600}
+        .glass {
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
 
-.tier-blurred {
-    filter: blur(4px);
-    opacity: 0.5;
-    pointer-events: none;
-    user-select: none;
-}
-.tier-overlay {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: var(--gold);
-    font-weight: bold;
-    font-size: 11px;
-    text-align: center;
-    background: rgba(0,0,0,0.85);
-    padding: 8px 12px;
-    border-radius: 4px;
-    border: 1px solid var(--gold);
-    z-index: 10;
-    width: max-content;
-}
-.opt-rec { position: relative; }
-</style>
+        /* Layout */
+        .app-container {
+            display: grid;
+            grid-template-areas: 
+                "header header"
+                "main sidebar";
+            grid-template-columns: 1fr 340px;
+            grid-template-rows: 70px 1fr;
+            height: 100vh;
+            padding: 15px;
+            gap: 15px;
+        }
 
+        header {
+            grid-area: header;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: var(--gold);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .system-status {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 10px var(--green);
+        }
+
+        main {
+            grid-area: main;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow: hidden;
+        }
+
+        /* Radar Table */
+        .radar-panel {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-title {
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--gold);
+        }
+
+        .table-container {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        thead th {
+            padding: 12px 20px;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            position: sticky;
+            top: 0;
+            background: rgba(10, 10, 12, 0.8);
+            backdrop-filter: blur(5px);
+            z-index: 10;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid var(--border);
+            transition: all 0.2s ease;
+        }
+
+        tbody tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+            transform: scale(1.002);
+        }
+
+        td {
+            padding: 16px 20px;
+            font-size: 14px;
+        }
+
+        .symbol-cell { font-weight: 700; color: var(--gold-bright); font-family: var(--font-mono); }
+        .price-cell { font-weight: 600; font-family: var(--font-mono); }
+        .score-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: rgba(212, 175, 55, 0.1);
+            color: var(--gold);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .action-cell { font-weight: 800; font-size: 12px; }
+        .long { color: var(--green); }
+        .short { color: var(--red); }
+
+        /* Sidebar Alerts */
+        aside {
+            grid-area: sidebar;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow: hidden;
+        }
+
+        .alerts-panel {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .alerts-feed {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .alert-card {
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(20px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .alert-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+
+        .alert-symbol { font-weight: 800; color: var(--gold); }
+        .alert-time { color: var(--text-dim); }
+        .alert-confs { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+
+        /* Stats Panel */
+        .stats-panel {
+            padding: 20px;
+            height: 200px;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .stat-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; }
+        .stat-value { font-size: 18px; font-weight: 700; color: var(--gold-bright); }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+    </style>
 </head>
 <body>
-<div class="header">
-  <h1>ORDER-FLOW-RADAR™</h1>
-  <div style="display:flex; gap:15px; align-items:center;">
-    <select id="tierSelect" style="background:#111; color:var(--gold); border:1px solid var(--border); padding:4px 8px; border-radius:4px; font-size:11px; font-weight:bold; cursor:pointer; outline:none;">
-        <option value="elite">ELITE TIER</option>
-        <option value="pro">PRO TIER</option>
-        <option value="free">FREE TIER</option>
-    </select>
-    <div class="status">
-    <div class="dot" id="statusDot"></div>
-    <span id="statusText" style="font-size:12px;color:var(--text2)">Connecting...</span>
-    <span id="uptimeText" style="font-size:10px;color:var(--text2);margin-left:4px"></span>
-    <span style="font-size:10px;color:var(--text2);margin-left:8px">ScriptMasterLabs™</span>
+    <div class="app-container">
+        <header class="glass">
+            <div class="logo">
+                <span style="font-size: 24px;">📡</span> ORDER FLOW RADAR™
+            </div>
+            <div class="system-status">
+                <div id="api-status-bar" style="display: flex; gap: 15px; margin-right: 20px; font-size: 11px;">
+                    <!-- Injected by JS -->
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div class="status-dot"></div>
+                    <span>LIVE MARKET DATA</span>
+                </div>
+                <div id="clock">00:00:00 UTC</div>
+            </div>
+        </header>
+
+        <main>
+            <div class="radar-panel glass">
+                <div class="panel-header">
+                    <div class="panel-title">Institutional Scanner Results</div>
+                    <div id="ticker-count" style="font-size: 12px; color: var(--text-dim);">0 symbols scanned</div>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Price</th>
+                                <th>Action</th>
+                                <th>Score</th>
+                                <th>CVD Ratio</th>
+                                <th>Volume</th>
+                                <th>Spread</th>
+                            </tr>
+                        </thead>
+                        <tbody id="radar-body">
+                            <!-- Rows injected by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+
+        <aside>
+            <div class="alerts-panel glass">
+                <div class="panel-header">
+                    <div class="panel-title">Signal Alerts</div>
+                </div>
+                <div class="alerts-feed" id="alerts-feed">
+                    <!-- Cards injected by SSE -->
+                </div>
+            </div>
+
+            <div class="stats-panel glass">
+                <div class="panel-title">System Performance</div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <div class="stat-label">Active Signals</div>
+                        <div class="stat-value" id="stat-active">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Win Rate</div>
+                        <div class="stat-value" id="stat-winrate">N/A</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Discovery</div>
+                        <div class="stat-value" id="stat-discovery">--</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">CVD Power</div>
+                        <div class="stat-value" id="stat-cvd">--</div>
+                    </div>
+                </div>
+            </div>
+        </aside>
     </div>
-  </div>
-</div>
-<div class="main">
-  <!-- LIVE SIGNALS -->
-  <div class="panel">
-    <div class="panel-header">
-      <span>🎯 Live Signals</span>
-      <span id="sigCount" style="color:var(--green);font-size:12px">0</span>
-    </div>
-    <div class="panel-body" id="signals">
-      <div class="status-banner" id="statusBanner">
-        <h3>⏳ System Starting...</h3>
-        <div class="stat"><span>Status</span><span class="val" id="sysModeVal">Initializing</span></div>
-        <div class="stat"><span>Universe</span><span class="val" id="sysUnivVal">--</span></div>
-        <div class="stat"><span>Flow Active</span><span class="val" id="sysFlowVal">--</span></div>
-        <div class="stat"><span>Uptime</span><span class="val" id="sysUptimeVal">--</span></div>
-      </div>
-      <div id="apiStatusGrid" class="api-grid">
-        <div class="api-item"><div class="api-dot warn" id="dotAlpaca"></div>Alpaca WS</div>
-        <div class="api-item"><div class="api-dot warn" id="dotSchwab"></div>Schwab</div>
-        <div class="api-item"><div class="api-dot warn" id="dotPolygon"></div>Polygon</div>
-        <div class="api-item"><div class="api-dot warn" id="dotDiscord"></div>Discord</div>
-      </div>
-      <div class="empty" id="noSignalMsg">Scanning market — signals appear here when confluence thresholds are met</div>
-    </div>
-  </div>
 
-  <!-- FLOW MONITOR -->
-  <div class="panel">
-    <div class="panel-header">
-      <span>📊 Flow Monitor</span>
-      <span id="flowCount" style="color:var(--text2);font-size:12px">0 active</span>
-    </div>
-    <div class="panel-body" id="flowPanel">
-      <div class="empty" id="flowEmpty">Fetching market data...</div>
-    </div>
-  </div>
+    <script>
+        // Update Clock
+        setInterval(() => {
+            document.getElementById('clock').textContent = new Date().toISOString().split('T')[1].split('.')[0] + ' UTC';
+        }, 1000);
 
-  <!-- OPTIONS RECOMMENDATIONS -->
-  <div class="panel">
-    <div class="panel-header">
-      <span>💰 Options Recommendations</span>
-      <span id="optCount" style="color:var(--gold);font-size:12px">0</span>
-    </div>
-    <div class="panel-body" id="optionsPanel">
-      <div class="empty">Options recommendations appear when signals qualify</div>
-    </div>
-  </div>
+        const radarBody = document.getElementById('radar-body');
+        const alertsFeed = document.getElementById('alerts-feed');
 
-  <!-- EVENT LOG -->
-  <div class="panel">
-    <div class="panel-header">
-      <span>📋 Event Log</span>
-      <span id="univInfo" style="color:var(--text2);font-size:11px">Universe: --</span>
-    </div>
-    <div class="panel-body" id="log"></div>
-  </div>
-</div>
+        const apiStatusBar = document.getElementById('api-status-bar');
 
-<script>
-const signalsEl = document.getElementById('signals');
-const flowEl = document.getElementById('flowPanel');
-const optEl = document.getElementById('optionsPanel');
-const logEl = document.getElementById('log');
-const sigCountEl = document.getElementById('sigCount');
-const flowCountEl = document.getElementById('flowCount');
-const optCountEl = document.getElementById('optCount');
-const univInfoEl = document.getElementById('univInfo');
-const statusText = document.getElementById('statusText');
-const statusDot = document.getElementById('statusDot');
-const uptimeText = document.getElementById('uptimeText');
+        async function updateHealth() {
+            try {
+                const res = await fetch('/api/health');
+                const health = await res.json();
+                apiStatusBar.innerHTML = Object.entries(health).map(([key, val]) => {
+                    const color = val === 'CONNECTED' || val === 'READY' ? 'var(--green)' : 'var(--red)';
+                    return `<div>${key.toUpperCase()}: <span style="color: ${color}">${val}</span></div>`;
+                }).join('');
+            } catch (e) {}
+        }
 
-const tierSelect = document.getElementById('tierSelect');
-tierSelect.addEventListener('change', () => { renderAllSignals(); pollFlow(); });
-function getTier() { return tierSelect.value; }
-let allSignals = {};
-let allOptions = [];
+        async function updateSnapshot() {
+            try {
+                const res = await fetch('/api/snapshot');
+                const data = await res.json();
+                
+                // Sort by score desc
+                // data.sort((a, b) => b.score - a.score);
 
-function addLog(msg) {
-  const d = document.createElement('div');
-  const ts = new Date().toLocaleTimeString();
-  d.innerHTML = '<span class="ts">[' + ts + ']</span> ' + msg;
-  logEl.prepend(d);
-  if (logEl.children.length > 200) logEl.removeChild(logEl.lastChild);
-}
+                radarBody.innerHTML = data.map(s => `
+                    <tr>
+                        <td class="symbol-cell">${s.symbol}</td>
+                        <td class="price-cell">$${s.last_price.toFixed(2)}</td>
+                        <td class="action-cell">--</td>
+                        <td><span class="score-badge">FLOWING</span></td>
+                        <td class="price-cell">${(s.cvd_ratio * 100).toFixed(0)}%</td>
+                        <td class="price-cell">${(s.total_volume / 1000).toFixed(0)}K</td>
+                        <td class="price-cell">${s.spread_pct.toFixed(3)}%</td>
+                    </tr>
+                `).join('');
+                
+                document.getElementById('ticker-count').textContent = `${data.length} symbols active on tape`;
+            } catch (e) {}
+        }
 
-function badgeClass(conf) {
-  return {HIGH:'badge-high',MEDIUM:'badge-med',LOW:'badge-low',SPECULATIVE:'badge-spec'}[conf]||'badge-low';
-}
+        // SSE Listener for real-time signals
+        const evtSource = new EventSource("/api/stream");
+        evtSource.addEventListener("signal", (e) => {
+            const sig = JSON.parse(e.data);
+            const card = document.createElement('div');
+            card.className = 'alert-card';
+            const actionClass = sig.action === 'LONG' ? 'long' : 'short';
+            
+            card.innerHTML = `
+                <div class="alert-header">
+                    <span class="alert-symbol">${sig.symbol}</span>
+                    <span class="alert-time">${sig.fired_at.split('T')[1].slice(0, 5)}</span>
+                </div>
+                <div style="font-weight: 800; margin-bottom: 5px;" class="${actionClass}">
+                    ${sig.action} @ $${sig.price.toFixed(2)}
+                </div>
+                <div class="alert-confs">
+                    ${sig.confluences.join(' • ')}
+                </div>
+            `;
+            
+            alertsFeed.prepend(card);
+            if (alertsFeed.children.length > 50) alertsFeed.lastChild.remove();
+            
+            // update stats
+            document.getElementById('stat-active').textContent = alertsFeed.children.length;
+        });
 
-function updateSystemStatus(status) {
-  if (!status) return;
-
-  // Update status banner
-  const banner = document.getElementById('statusBanner');
-  const modeVal = document.getElementById('sysModeVal');
-  const univVal = document.getElementById('sysUnivVal');
-  const flowVal = document.getElementById('sysFlowVal');
-  const uptimeVal = document.getElementById('sysUptimeVal');
-
-  if (banner) {
-    banner.querySelector('h3').textContent = '🟢 System Online';
-    banner.querySelector('h3').style.color = 'var(--green)';
-  }
-  if (modeVal) modeVal.textContent = status.mode || 'LIVE';
-  if (univVal) univVal.textContent = (status.universe_count || 0) + ' tickers';
-  if (flowVal) flowVal.textContent = (status.flow_active || 0) + ' symbols';
-  if (uptimeVal) uptimeVal.textContent = status.uptime_display || '--';
-  if (uptimeText) uptimeText.textContent = '⏱ ' + (status.uptime_display || '');
-  if (univInfoEl) univInfoEl.textContent = 'Universe: ' + (status.universe_count || 0) + ' tickers';
-
-  // Update API dots
-  const apis = status.api_status || {};
-  setDot('dotAlpaca', apis.alpaca_ws);
-  setDot('dotSchwab', apis.schwab);
-  setDot('dotPolygon', apis.polygon);
-  setDot('dotDiscord', apis.discord);
-
-  // Inject server-side log entries
-  const serverLogs = status.system_log || [];
-  serverLogs.forEach(entry => {
-    const key = 'slog_' + entry.ts + '_' + entry.msg.substring(0,20);
-    if (!document.getElementById(key)) {
-      const d = document.createElement('div');
-      d.id = key;
-      d.innerHTML = '<span class="ts">[' + entry.ts + ']</span> <span style="color:var(--cyan)">SYS</span> ' + entry.msg;
-      logEl.prepend(d);
-    }
-  });
-}
-
-function setDot(id, val) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.className = 'api-dot ' + (val === true ? 'ok' : val === false ? 'err' : 'warn');
-}
-
-function renderSignal(sig) {
-  const dir = sig.direction || 'neutral';
-  const opts = sig.options || [];
-  let optsHtml = '';
-  opts.forEach((o,i) => {
-    const emoji = i===0?'🥇':i===1?'🥈':'🥉';
-    optsHtml += '<div class="opt-rec">' +
-      '<div class="strike">' + emoji + ' ' + o.direction + ' $' + o.strike.toFixed(2) + ' — ' + o.expiration + '</div>' +
-      '<div class="details">DTE: ' + o.dte + 'd | Δ ' + o.delta.toFixed(2) + ' | Bid/Ask: $' + o.bid.toFixed(2) + '/$' + o.ask.toFixed(2) +
-      ' | Vol: ' + o.volume.toLocaleString() + ' | OI: ' + o.open_interest.toLocaleString() +
-      ' | IV: ' + (o.iv*100).toFixed(0) + '% | <span class="badge ' + badgeClass(o.confidence) + '">' + o.confidence + '</span></div></div>';
-  });
-
-  const reasons = (sig.reasons||[]).map(r => '• ' + r).join('<br>');
-
-  return '<div class="signal-card ' + dir + '">' +
-    '<div style="display:flex;justify-content:space-between;align-items:center">' +
-    '<span class="sym">' + sig.symbol + '</span>' +
-    '<span class="badge ' + badgeClass(sig.confidence) + '">' + sig.confidence + '</span></div>' +
-    '<div class="action ' + dir + '">' + sig.action + '</div>' +
-    '<div class="meta"><span>Score: ' + sig.score.toFixed(0) + '/100</span>' +
-    '<span>Buy: ' + (sig.flow?.metrics?.buy_pct||0).toFixed(0) + '%</span>' +
-    '<span>CVD: ' + (sig.flow?.metrics?.cvd||0).toLocaleString() + '</span>' +
-    '<span>' + sig.timestamp + '</span></div>' +
-    '<div class="score-bar"><div class="score-fill" style="width:' + sig.score + '%;background:' + (dir==='bullish'?'var(--green)':'var(--pink)') + '"></div></div>' +
-    (reasons?'<div style="font-size:11px;color:var(--text2);margin-top:4px">' + reasons + '</div>':'') +
-    optsHtml + '</div>';
-}
-
-function renderAllSignals() {
-  const sorted = Object.values(allSignals).sort((a,b) => b.score - a.score);
-
-  // Always keep status banner and API grid visible
-  const banner = document.getElementById('statusBanner');
-  const apiGrid = document.getElementById('apiStatusGrid');
-  const noSigMsg = document.getElementById('noSignalMsg');
-
-  if (sorted.length === 0) {
-    // Keep the status elements, just show no signals message
-    if (banner) banner.style.display = '';
-    if (apiGrid) apiGrid.style.display = '';
-    if (noSigMsg) noSigMsg.style.display = '';
-    sigCountEl.textContent = '0';
-  } else {
-    // Hide status banner when actual signals exist (signals take priority)
-    if (banner) banner.style.display = 'none';
-    if (apiGrid) apiGrid.style.display = 'none';
-    if (noSigMsg) noSigMsg.style.display = 'none';
-
-    // Render signals AFTER the status elements
-    // Remove old signal cards first
-    const oldCards = signalsEl.querySelectorAll('.signal-card');
-    oldCards.forEach(c => c.remove());
-
-    sorted.forEach(sig => {
-      signalsEl.insertAdjacentHTML('beforeend', renderSignal(sig));
-    });
-    sigCountEl.textContent = sorted.length;
-  }
-
-  // Update options panel
-  allOptions = [];
-  sorted.forEach(s => {
-    (s.options||[]).forEach(o => {
-      allOptions.push({...o, parent_symbol: s.symbol, parent_action: s.action, parent_score: s.score});
-    });
-  });
-  allOptions.sort((a,b) => b.score - a.score);
-  if (allOptions.length === 0) {
-    optEl.innerHTML = '<div class="empty">Options recommendations appear when signals qualify</div>';
-    optCountEl.textContent = '0';
-  } else {
-    optEl.innerHTML = allOptions.map((o,i) => {
-      const emoji = i===0?'🥇':i===1?'🥈':i===2?'🥉':'▪️';
-      const tier = getTier();
-      let blurClass = '';
-      let overlay = '';
-      if (tier === 'free') {
-          blurClass = 'tier-blurred';
-          overlay = '<div class="tier-overlay">UPGRADE TO PRO/ELITE<br><span style="font-size:9px;color:var(--text2);font-weight:normal">To Unlock Options Recs</span></div>';
-      } else if (tier === 'pro' && i > 0) {
-          blurClass = 'tier-blurred';
-          overlay = '<div class="tier-overlay">UPGRADE TO ELITE<br><span style="font-size:9px;color:var(--text2);font-weight:normal">To Unlock Full Chain</span></div>';
-      }
-      return '<div class="opt-rec" style="margin-bottom:6px">' + overlay +
-        '<div class="' + blurClass + '">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center">' +
-        '<span class="strike">' + emoji + ' ' + o.parent_symbol + ' ' + o.direction + ' $' + o.strike.toFixed(2) + '</span>' +
-        '<span class="badge ' + badgeClass(o.confidence) + '">' + o.confidence + '</span></div>' +
-        '<div style="color:var(--gold);font-weight:600;margin-top:2px">' + o.expiration + ' (' + o.dte + ' DTE)</div>' +
-        '<div class="details">Δ ' + o.delta.toFixed(2) + ' | $' + o.bid.toFixed(2) + '/$' + o.ask.toFixed(2) +
-        ' | Vol ' + o.volume.toLocaleString() + ' | OI ' + o.open_interest.toLocaleString() +
-        ' | IV ' + (o.iv*100).toFixed(0) + '% | Score ' + o.score.toFixed(0) + '</div></div></div>';
-    }).join('');
-    optCountEl.textContent = allOptions.length;
-  }
-}
-
-// SSE Connection — now receives system status events too
-function connectSSE() {
-  const es = new EventSource('/api/stream');
-  es.addEventListener('signal', (e) => {
-    const sig = JSON.parse(e.data);
-    allSignals[sig.symbol] = sig;
-    renderAllSignals();
-    addLog('🎯 <b style="color:' + (sig.direction==='bullish'?'var(--green)':'var(--pink)') + '">' + sig.symbol + '</b> ' + sig.action + ' (Score: ' + sig.score.toFixed(0) + ')');
-  });
-  es.addEventListener('status', (e) => {
-    const status = JSON.parse(e.data);
-    updateSystemStatus(status);
-  });
-  es.addEventListener('ping', () => {});
-  es.onopen = () => {
-    statusText.textContent = 'LIVE';
-    statusDot.style.background = 'var(--green)';
-    addLog('✅ Connected to Order-Flow-Radar');
-  };
-  es.onerror = () => {
-    statusText.textContent = 'Reconnecting...';
-    statusDot.style.background = 'var(--orange)';
-  };
-}
-
-// Poll flow + universe periodically
-async function pollFlow() {
-  try {
-    const resp = await fetch('/api/flow');
-    const data = await resp.json();
-    const entries = Object.entries(data).sort((a,b) => b[1].score - a[1].score);
-    flowCountEl.textContent = entries.length + ' active';
-    if (entries.length === 0) {
-      flowEl.innerHTML = '<div class="empty" id="flowEmpty">Monitoring market data — flow appears when trades stream in</div>';
-      return;
-    }
-    const tier = getTier();
-    if (tier === 'free') {
-      const maskedData = entries.slice(0,6).map(([sym, f]) => {
-          return '<div class="flow-row"><span class="sym">???</span>' +
-            '<span style="color:var(--text2);font-size:11px;min-width:50px">????</span>' +
-            '<div class="bar-wrap"><div class="bar-inner" style="width:50%;background:var(--text2)"></div></div>' +
-            '<span style="min-width:40px;text-align:right">--</span></div>';
-      }).join('');
-      flowEl.innerHTML = '<div style="position:relative;height:100%;"><div class="tier-overlay" style="position:absolute;top:50px;">UPGRADE TO PRO/ELITE<br><span style="font-size:9px;color:var(--text2);font-weight:normal">To Unlock Real-Time Flow</span></div><div class="tier-blurred">' + maskedData + '</div></div>';
-      return;
-    }
-    flowEl.innerHTML = entries.slice(0,50).map(([sym, f]) => {
-      const dir = f.direction;
-      const color = dir==='bullish'?'var(--green)':dir==='bearish'?'var(--pink)':'var(--text2)';
-      const bp = f.metrics?.buy_pct||50;
-      const price = f.last_price ? '$' + f.last_price.toFixed(2) : '';
-      return '<div class="flow-row"><span class="sym">' + sym + '</span>' +
-        '<span style="color:' + color + ';font-size:11px;min-width:50px">' + dir.toUpperCase().slice(0,4) + '</span>' +
-        '<div class="bar-wrap"><div class="bar-inner" style="width:' + bp + '%;background:' + color + '"></div></div>' +
-        '<span style="min-width:60px;text-align:right;font-size:11px;color:var(--text2)">' + price + '</span>' +
-        '<span style="min-width:40px;text-align:right">' + f.score.toFixed(0) + '</span></div>';
-    }).join('');
-  } catch(e) {}
-}
-
-async function pollUniverse() {
-  try {
-    const resp = await fetch('/api/universe');
-    const data = await resp.json();
-    univInfoEl.textContent = 'Universe: ' + data.count + ' tickers';
-  } catch(e) {}
-}
-
-async function pollStatus() {
-  try {
-    const resp = await fetch('/api/status');
-    const data = await resp.json();
-    updateSystemStatus(data);
-  } catch(e) {}
-}
-
-// Load initial data from all endpoints
-async function fetchInitialData() {
-  try {
-    // Fetch system status first
-    await pollStatus();
-
-    // Fetch any existing signals
-    const sigResp = await fetch('/api/signals');
-    const sigData = await sigResp.json();
-    sigData.forEach(sig => { allSignals[sig.symbol] = sig; });
-    if (sigData.length > 0) {
-      renderAllSignals();
-      addLog('✅ Loaded ' + sigData.length + ' active signals');
-    }
-
-    // Fetch flow and universe
-    await pollFlow();
-    await pollUniverse();
-  } catch(e) {}
-}
-
-// Fire everything immediately
-fetchInitialData();
-connectSSE();
-setInterval(pollFlow, 5000);
-setInterval(pollUniverse, 30000);
-setInterval(pollStatus, 15000);
-addLog('🔌 Initializing Order-Flow-Radar™...');
-</script>
+        // Initialize
+        setInterval(updateSnapshot, 5000);
+        setInterval(updateHealth, 5000);
+        updateSnapshot();
+        updateHealth();
+    </script>
 </body>
 </html>

@@ -1,26 +1,28 @@
 """
-Web Dashboard — FastAPI server with Server-Sent Events (SSE).
-Live streaming: signals, flow metrics, options recs update continuously.
-No page refresh needed. Data pushes to browser in real time.
+Order Flow Radar™ — Dashboard Server
+ScriptMasterLabs™
 
-CRITICAL: Dashboard loads IMMEDIATELY with system status.
-User NEVER waits for full ticker gathering before seeing data.
+FastAPI server providing:
+  - Real-time signal stream via SSE (Server-Sent Events)
+  - REST endpoints for system state and recent history
+  - No mock data. Values come directly from FlowEngine and Journal.
 """
+from __future__ import annotations
 import asyncio
-import json
 import logging
-import os
-import time
 from datetime import datetime
+from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse
+from sse_starlette.sse import EventSourceResponse
 
-logger = logging.getLogger("dashboard")
+import config
 
-app = FastAPI(title="Order-Flow-Radar™", version="1.0")
+logger = logging.getLogger("dashboard_server")
 
+app = FastAPI(title="Order Flow Radar™")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,178 +30,88 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# These get set by main.py at startup
-_confluence_engine = None
-_flow_engine = None
-_universe_scanner = None
-_discord_alerter = None
-_alpaca_api = None
-_signal_queue: asyncio.Queue = asyncio.Queue()
-_startup_time = time.time()
-_api_status = {
-    "alpaca_ws": False,
-    "schwab": False,
-    "polygon": False,
-    "discord": False,
-}
-_system_log: list = []
+from modules.alpaca_api import api_health
+
+# Global instances (wired at startup)
+_confluence = None
+_flow = None
+_universe = None
+_discord = None
+_journal = None
+
+# SSE Signal Queue
+_signal_queue = asyncio.Queue()
+
+@app.get("/api/health")
+async def get_health():
+    return api_health
 
 
-def set_engines(confluence, flow, universe, discord=None, alpaca=None):
-    global _confluence_engine, _flow_engine, _universe_scanner, _discord_alerter, _alpaca_api
-    _confluence_engine = confluence
-    _flow_engine = flow
-    _universe_scanner = universe
-    _discord_alerter = discord
-    _alpaca_api = alpaca
+def set_engines(confluence, flow, universe, discord, journal):
+    global _confluence, _flow, _universe, _discord, _journal
+    _confluence = confluence
+    _flow = flow
+    _universe = universe
+    _discord = discord
+    _journal = journal
 
 
-def set_api_status(key: str, value: bool):
-    global _api_status
-    _api_status[key] = value
+async def push_signal(sig: dict):
+    """Push a signal to the SSE stream."""
+    await _signal_queue.put(sig)
 
 
-def add_system_log(msg: str):
-    """Add a server-side log entry that the dashboard can display."""
-    _system_log.append({"ts": datetime.now().strftime("%H:%M:%S"), "msg": msg})
-    if len(_system_log) > 200:
-        del _system_log[:50]
-
-
-async def push_signal(signal_data: dict):
-    """Called by main loop when a new signal fires."""
-    await _signal_queue.put(signal_data)
-
-
-DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'dashboard', 'index.html')
-
-@app.get('/', response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse)
 async def index():
-    if os.path.exists(DASHBOARD_PATH):
-        with open(DASHBOARD_PATH, 'r', encoding='utf-8') as f:
-            return HTMLResponse(f.read())
-    return HTMLResponse('Dashboard HTML not found.')
+    return FileResponse("dashboard/index.html")
 
 
 @app.get("/api/status")
 async def get_status():
-    """Full system status — always returns data immediately."""
-    uptime = int(time.time() - _startup_time)
-    universe_count = 0
-    universe_tickers = []
-    if _universe_scanner:
-        universe_tickers = getattr(_universe_scanner, 'active_universe', [])
-        universe_count = len(universe_tickers)
-
-    flow_count = 0
-    if _flow_engine:
-        flow_count = len(_flow_engine.states)
-
-    signal_count = 0
-    if _confluence_engine:
-        signal_count = len(_confluence_engine.active_signals)
-
     return {
-        "system": "Order-Flow-Radar™",
-        "version": "1.0",
-        "mode": "LIVE",
-        "uptime_seconds": uptime,
-        "uptime_display": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "api_status": _api_status,
-        "universe_count": universe_count,
-        "universe_tickers": universe_tickers[:50],
-        "flow_active": flow_count,
-        "signals_active": signal_count,
-        "system_log": _system_log[-30:],
+        "status": "ONLINE",
+        "time": datetime.utcnow().isoformat(),
+        "universe_count": _universe.symbol_count() if _universe else 0,
+        "active_symbols": len(_flow.states) if _flow else 0,
     }
 
 
-@app.get("/api/signals")
-async def get_signals():
-    """Current active signals."""
-    if _confluence_engine:
-        return _confluence_engine.get_active_signals()
-    return []
+@app.get("/api/snapshot")
+async def get_snapshot():
+    """Real-time snapshot of symbols with active price data."""
+    if not _flow:
+        return []
+    return _flow.snapshot()
 
 
-@app.get("/api/history")
-async def get_history():
-    """Signal history."""
-    if _confluence_engine:
-        return _confluence_engine.get_history(100)
-    return []
-
-
-@app.get("/api/flow")
-async def get_flow():
-    """All flow states."""
-    if _flow_engine:
-        states = {}
-        for sym, state in _flow_engine.states.items():
-            states[sym] = _flow_engine.get_flow_score(sym)
-        return states
-    return {}
-
-
-@app.get("/api/universe")
-async def get_universe():
-    """Current scan universe."""
-    if _universe_scanner:
-        return {"tickers": _universe_scanner.active_universe, "count": len(_universe_scanner.active_universe)}
-    return {"tickers": [], "count": 0}
-
-
-@app.get("/api/discord")
-async def get_discord_stats():
-    """Discord delivery stats — monitor success/failure by tier."""
-    if _discord_alerter and hasattr(_discord_alerter, 'get_delivery_stats'):
-        stats = _discord_alerter.get_delivery_stats()
-        stats["webhooks"] = {
-            "free": bool(_discord_alerter.webhook_free),
-            "pro": bool(_discord_alerter.webhook_pro),
-            "premium": bool(_discord_alerter.webhook_premium),
-        }
-        return stats
-    return {"error": "Discord alerter not initialized"}
+@app.get("/api/signals/recent")
+async def get_recent_signals():
+    """Fetch recent signals from the journal."""
+    if not _journal:
+        return []
+    return await _journal.get_recent_signals(limit=50)
 
 
 @app.get("/api/stream")
-async def stream_signals(request: Request):
-    """SSE endpoint — browser connects once, signals push continuously.
-    Also pushes system status every 15s so dashboard is never stale."""
-
+async def signal_stream(request: Request):
+    """SSE endpoint for real-time signal updates."""
     async def event_generator():
-        # Immediately push current system status on connect
-        status = await get_status()
-        yield f"event: status\ndata: {json.dumps(status)}\n\n"
-
-        # Push any existing active signals immediately
-        if _confluence_engine:
-            active = _confluence_engine.get_active_signals()
-            if active:
-                for sig in active:
-                    yield f"event: signal\ndata: {json.dumps(sig)}\n\n"
-
-        status_counter = 0
         while True:
             if await request.is_disconnected():
                 break
+            
             try:
-                signal = await asyncio.wait_for(_signal_queue.get(), timeout=5.0)
-                data = json.dumps(signal)
-                yield f"event: signal\ndata: {data}\n\n"
+                sig = await asyncio.wait_for(_signal_queue.get(), timeout=1.0)
+                yield {
+                    "event": "signal",
+                    "id": sig["fired_at"],
+                    "data": json.dumps(sig)
+                }
             except asyncio.TimeoutError:
-                status_counter += 1
-                if status_counter >= 3:  # Every ~15 seconds
-                    status = await get_status()
-                    yield f"event: status\ndata: {json.dumps(status)}\n\n"
-                    status_counter = 0
-                else:
-                    yield f"event: ping\ndata: {datetime.now().isoformat()}\n\n"
+                yield {
+                    "event": "ping",
+                    "data": "keep-alive"
+                }
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
+    import json
+    return EventSourceResponse(event_generator())

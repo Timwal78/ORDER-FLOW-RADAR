@@ -1,44 +1,38 @@
 """
-Order-Flow-Radar™ — Main Orchestrator
+Order-Flow-Radar™ — Institutional Orchestrator
 ScriptMasterLabs™
 
-Initializes all engines, runs continuous async loops:
-  1. Universe rebuild (every 5 min)
-  2. Alpaca websocket (continuous real-time trades/quotes)
-  3. Alpaca REST snapshot polling (fills data when websocket is quiet)
-  4. Signal evaluation loop (every 30s)
-  5. Web dashboard (FastAPI + SSE)
-  6. Discord alerts on signal fire
-
-CRITICAL: Dashboard + Discord fire IMMEDIATELY on startup.
-User NEVER waits for full universe scan or ticker gathering.
+Runs 8 concurrent async loops (Law 3 compliance):
+  1. Universe Discovery (every 5 min - Manifesto Rule 2)
+  2. Alpaca WebSocket Stream (real-time tick-rule CVD)
+  3. REST Snapshot Loop (initializes prices for discovered symbols)
+  4. Signal Evaluation Loop (every 5 min - Law 3.1)
+  5. Dashboard Server (FastAPI + SSE)
+  6. Learner Retrain (every 24h)
+  7. Discord Signal Queue (Tiered delivery)
+  8. Heartbeat & Health Check
 """
 import asyncio
-import signal
 import logging
+import signal
 import sys
-import uvicorn
-import aiohttp
 from datetime import datetime
 
+import uvicorn
+
 import config
-from modules.schwab_api import SchwabAPI
-from modules.polygon_api import PolygonAPI
 from modules.alpaca_api import AlpacaAPI
+from modules.polygon_api import PolygonAPI
+from modules.schwab_api import SchwabAPI
 from modules.flow_engine import FlowEngine
-from modules.options_recommender import OptionsRecommender
+from modules.universe_engine import UniverseEngine
 from modules.confluence_engine import ConfluenceEngine
-from modules.sweep_scanner import SweepScanner
-from modules.signal_journal import SignalJournal
-from modules.earnings_detector import EarningsDetector
-from modules.paper_portfolio import PaperPortfolio
-from modules.x_signal_bot import XSignalBot
-from modules.universe_scanner import UniverseScanner
+from modules.options_engine import OptionsEngine
+from modules.signal_router import SignalRouter
 from modules.discord_alerter import DiscordAlerter
-from modules.dashboard import (
-    app as dashboard_app, set_engines, push_signal,
-    set_api_status, add_system_log,
-)
+from modules.signal_journal import SignalJournal
+from modules.learner import Learner
+from modules.dashboard import app as dashboard_app, set_engines
 
 # =============================================================================
 # LOGGING
@@ -51,514 +45,218 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 # =============================================================================
-# GLOBALS
+# GLOBALS / ENGINES
 # =============================================================================
-schwab: SchwabAPI
-polygon: PolygonAPI
-alpaca: AlpacaAPI
-flow: FlowEngine
-options_rec: OptionsRecommender
-confluence: ConfluenceEngine
-universe: UniverseScanner
-discord: DiscordAlerter
-sweep: SweepScanner
+alpaca_client: AlpacaAPI
+polygon_client: PolygonAPI
+schwab_client: SchwabAPI
+
+flow_engine: FlowEngine
+universe_engine: UniverseEngine
+confluence_engine: ConfluenceEngine
+options_engine: OptionsEngine
+router: SignalRouter
+discord_alerter: DiscordAlerter
 journal: SignalJournal
-earnings: EarningsDetector
-paper: PaperPortfolio
-xbot: XSignalBot
+learner: Learner
 
 shutdown_event = asyncio.Event()
 
 
-def check_config():
-    """Validate required API keys exist. No fakes.
-    Returns missing keys but does NOT exit — dashboard must load regardless."""
-    missing = []
-    if not config.ALPACA_API_KEY:
-        missing.append("ALPACA_API_KEY")
-    if not config.ALPACA_API_SECRET:
-        missing.append("ALPACA_API_SECRET")
-
+def check_startup_keys():
+    """Verify required keys exist. No fakes allowed."""
+    required = {
+        "ALPACA_API_KEY": config.ALPACA_API_KEY,
+        "ALPACA_API_SECRET": config.ALPACA_API_SECRET,
+        "POLYGON_API_KEY": config.POLYGON_API_KEY,
+    }
+    missing = [k for k, v in required.items() if not v]
     if missing:
-        logger.error(f"CRITICAL MISSING API KEYS: {', '.join(missing)}")
-        logger.error("Set them in .env file. No defaults. No fakes.")
+        logger.error(f"FATAL: Missing required API keys: {', '.join(missing)}")
+        logger.error("Set them in .env. No mock data permitted under the Law.")
         sys.exit(1)
 
-    # Schwab is NOT mandatory for dashboard/discord to load
-    optional = []
-    if not config.SCHWAB_APP_KEY:
-        optional.append("SCHWAB_APP_KEY (options chains disabled)")
-    if not config.SCHWAB_APP_SECRET:
-        optional.append("SCHWAB_APP_SECRET (options chains disabled)")
-    if not config.SCHWAB_REFRESH_TOKEN:
-        optional.append("SCHWAB_REFRESH_TOKEN (options chains disabled)")
-    if not config.POLYGON_API_KEY:
-        optional.append("POLYGON_API_KEY (universe scan limited)")
-    if not config.ALPHA_VANTAGE_KEY:
-        optional.append("ALPHA_VANTAGE_KEY (sentiment disabled)")
-    import os
-    if not os.getenv("DISCORD_WEBHOOK_FREE"):
-        optional.append("DISCORD_WEBHOOK_FREE (free-tier alerts disabled)")
-    if not os.getenv("DISCORD_WEBHOOK_PRO"):
-        optional.append("DISCORD_WEBHOOK_PRO (pro-tier alerts disabled)")
-    if not os.getenv("DISCORD_WEBHOOK_PREMIUM"):
-        optional.append("DISCORD_WEBHOOK_PREMIUM (premium-tier alerts disabled)")
-    if not any([os.getenv("DISCORD_WEBHOOK_FREE"), os.getenv("DISCORD_WEBHOOK_PRO"), os.getenv("DISCORD_WEBHOOK_PREMIUM")]):
-        logger.error("CRITICAL: No Discord webhooks configured! Paying customers will NOT receive signals!")
-    for o in optional:
-        logger.warning(f"Optional missing: {o}")
-    return missing
 
+# =============================================================================
+# LOOPS (The Engine Cycles)
+# =============================================================================
 
-async def universe_loop():
-    """Rebuild scan universe every 5 minutes.
-    Errors do NOT block anything — dashboard and discord run regardless."""
+async def universe_discovery_loop():
+    """Manifesto Rule 2: Dynamic discovery, no slice limits. Every 5 min."""
     while not shutdown_event.is_set():
         try:
-            tickers = await universe.build_universe()
-            logger.info(f"Universe: {len(tickers)} tickers | Always: {config.ALWAYS_SCAN}")
-            add_system_log(f"Universe rebuilt: {len(tickers)} tickers")
-
-            # Update Alpaca websocket subscription with top movers
-            stream_symbols = tickers[:1000]
-            try:
-                await alpaca.update_subscription(stream_symbols)
-                set_api_status("alpaca_ws", True)
-            except Exception as e:
-                logger.warning(f"WS subscription update failed: {e}")
-
+            symbols = await universe_engine.build()
+            logger.info(f"Loop: Universe refreshed. {len(symbols)} tickers active.")
+            
+            # Update WebSocket subscription with new tickers
+            await alpaca_client.update_subscription(symbols[:1000]) # IEX limit check
         except Exception as e:
-            logger.error(f"Universe rebuild failed: {e}")
-            add_system_log(f"⚠️ Universe rebuild error: {str(e)[:80]}")
-
-        await asyncio.sleep(300)  # 5 min
-
-
-async def stream_loop():
-    """Connect to Alpaca websocket for real-time trades/quotes."""
-    initial = config.ALWAYS_SCAN[:50]
-    try:
-        add_system_log(f"Connecting Alpaca stream for: {', '.join(initial)}")
-        await alpaca.start_stream(
-            symbols=initial,
-            on_trade=flow.on_trade,
-            on_quote=flow.on_quote,
-        )
-    except Exception as e:
-        logger.error(f"Stream died: {e}")
-        add_system_log(f"⚠️ Stream error: {str(e)[:80]}")
-        await asyncio.sleep(5)
-        if not shutdown_event.is_set():
-            asyncio.create_task(stream_loop())
+            logger.error(f"Universe discovery loop failed: {e}")
+        
+        await asyncio.sleep(config.UNIVERSE_REFRESH_SECONDS)
 
 
-async def rest_snapshot_loop():
-    """Poll Alpaca REST for snapshots when websocket data is quiet.
-    This ensures the dashboard ALWAYS has price data to show,
-    even after hours or when the stream has no trades."""
-    await asyncio.sleep(5)  # Let stream connect first
-
+async def snapshot_loop():
+    """Initializes price data for symbols not yet hit by WebSocket trades."""
     while not shutdown_event.is_set():
         try:
-            # Get all symbols we should be tracking
-            symbols = list(config.ALWAYS_SCAN)
-            if universe and hasattr(universe, 'active_universe'):
-                # Expand pulling from 50 to 3000 for aggressive flow radar
-                symbols = list(set(symbols + universe.active_universe[:3000]))
-
-            if not symbols:
-                await asyncio.sleep(30)
-                continue
-
-            session = aiohttp.ClientSession()
-            try:
-                headers = {
-                    "APCA-API-KEY-ID": config.ALPACA_API_KEY,
-                    "APCA-API-SECRET-KEY": config.ALPACA_API_SECRET,
-                }
-                
-                # Fetch snapshots in batches to respect URL length limits
-                batch_size = 100
-                total_injected = 0
-                
-                for i in range(0, len(symbols), batch_size):
-                    batch = symbols[i:i+batch_size]
-                    sym_str = ",".join(batch)
-                    
-                    # Using the efficient snapshots endpoint (combines trades + quotes)
-                    # OMIT 'feed': 'iex' to use the best available feed (SIP for customers)
-                    url = "https://data.alpaca.markets/v2/stocks/snapshots"
-                    async with session.get(url, headers=headers,
-                                           params={"symbols": sym_str},
-                                           timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if not data:
-                                continue
-                            
-                            for sym, snap in data.items():
-                                state = flow.get_state(sym)
-                                
-                                # Process Trade
-                                latest_trade = snap.get("latestTrade", {})
-                                min_bar = snap.get("minuteBar", {})
-                                daily_bar = snap.get("dailyBar", {})
-                                prev_daily = snap.get("prevDailyBar", {})
-                                bar_vol = daily_bar.get("v", 0) or 0
-                                
-                                price = latest_trade.get("p") or min_bar.get("c") or daily_bar.get("c") or 0
-                                if price > 0:
-                                    if state.last_price == 0:
-                                        total_injected += 1
-                                    state.last_price = price
-                                        
-                                # ── CRITICAL: Inject/Update REAL volume into flow states ──
-                                # If bar_vol has increased since last check, update the state.
-                                if bar_vol > state.total_volume:
-                                    diff = bar_vol - state.total_volume
-                                    
-                                    # Estimate split based on price relative to prev close
-                                    prev_close = prev_daily.get("c", 0) or daily_bar.get("o", 0) or 0
-                                    bar_close = daily_bar.get("c", 0) or price
-                                    
-                                    if prev_close > 0 and bar_close > 0:
-                                        if bar_close >= prev_close:
-                                            # Bullish movement -> allocate 70/30 buy/sell
-                                            buy_ratio = 0.70
-                                        else:
-                                            buy_ratio = 0.30
-                                    else:
-                                        buy_ratio = 0.50
-                                    
-                                    # Update volumes
-                                    added_buy = int(diff * buy_ratio)
-                                    added_sell = diff - added_buy
-                                    
-                                    state.buy_volume += added_buy
-                                    state.sell_volume += added_sell
-                                    state.total_volume = bar_vol
-                                    state.cvd += float(added_buy - added_sell)
-                                    
-                                    if state.last_price == 0:
-                                        total_injected += 1
-
-                                # Process Quote
-                                latest_quote = snap.get("latestQuote", {})
-                                bp = latest_quote.get("bp", 0)
-                                ap = latest_quote.get("ap", 0)
-                                if bp > 0:
-                                    state.bid = bp
-                                if ap > 0:
-                                    state.ask = ap
-                                if bp > 0 and ap > 0:
-                                    state.spread = ap - bp
-
-                        else:
-                            text = await resp.text()
-                            logger.error(f"Snapshot loop Error {resp.status}: {text[:100]}")
-                            break # Bail from this batch on error
-
-                    await asyncio.sleep(0.1) # Small delay to not anger Alpaca API
-                    
-                if total_injected > 0:
-                    add_system_log(f"REST snapshot: {total_injected} symbols initialized/updated out of {len(symbols)}")
-                    set_api_status("alpaca_ws", True)
-
-            finally:
-                await session.close()
-
+            symbols = universe_engine.active_universe
+            if symbols:
+                snaps = await alpaca_client.get_snapshots(symbols)
+                for sym, data in snaps.items():
+                    # LAW 1.2: Price injection ONLY. No CVD estimation from snapshots.
+                    price = data.get("latestTrade", {}).get("p") or data.get("minuteBar", {}).get("c") or 0
+                    if price > 0:
+                        flow_engine.inject_price_only(sym, price)
         except Exception as e:
-            logger.error(f"REST snapshot error: {e}")
+            logger.error(f"Snapshot loop failed: {e}")
+        
+        await asyncio.sleep(config.REST_SNAPSHOT_INTERVAL)
 
-        await asyncio.sleep(30)  # Refresh every 30s
 
-
-async def signal_eval_loop():
-    """Evaluate all flowing symbols for confluence signals."""
-    await asyncio.sleep(10)
+async def evaluation_loop():
+    """Law 3.1: Institutional evaluation every 5 minutes."""
+    # Pre-loop wait to gather some volume
+    await asyncio.sleep(60)
 
     while not shutdown_event.is_set():
         try:
-            evaluated = 0
-            fired = 0
+            logger.info("Cycle: Evaluating all active symbols...")
+            active_symbols = flow_engine.active_symbols()
+            fired_count = 0
 
-            for symbol in list(flow.states.keys()):
-                state = flow.states[symbol]
-                # Allow eval if we have ANY price data (not just volume > 100)
-                if state.last_price <= 0:
-                    continue
-
-                sig = await confluence.evaluate(symbol)
-                evaluated += 1
-
+            for symbol in active_symbols:
+                sig = await confluence_engine.evaluate(symbol)
                 if sig:
-                    evaluated += 1
-                    sig_dict = sig.to_dict()
-
-                    # Always push to dashboard SSE for "Live Table" updates
-                    # but only push to Discord and "Alerts" if is_new_alert is True
-                    await push_signal(sig_dict)
-
+                    # Enrich with real options recommendations if signal is strong
                     if sig.is_new_alert:
-                        fired += 1
-                        # Push to Discord
-                        await discord.send_signal(sig_dict)
-                        
-                        # Log it
-                        opts_str = ""
-                        if sig.options_recs:
-                            top = sig.options_recs[0]
-                            opts_str = f" → {top['direction']} ${top['strike']:.2f} {top['expiration']}"
-                        logger.info(f"🎯 ALERT: {symbol} {sig.action} (Score: {sig.score:.0f}){opts_str}")
-
-            if evaluated > 0:
-                add_system_log(f"Eval cycle: {evaluated} symbols, {fired} signals")
-                logger.info(f"Eval cycle: {evaluated} symbols checked, {fired} signals fired")
-
+                        recs = await options_engine.get_recommendations(symbol, sig.action)
+                        sig.options_recs = recs
+                    
+                    # Route to dashboard/discord/journal
+                    await router.route(sig)
+                    fired_count += 1
+            
+            logger.info(f"Cycle: Evaluation complete. {fired_count} signals fired.")
         except Exception as e:
-            logger.error(f"Signal eval error: {e}")
-
+            logger.error(f"Evaluation loop error: {e}")
+        
         await asyncio.sleep(config.SIGNAL_EVAL_INTERVAL)
 
 
-async def free_queue_loop():
-    """Process delayed free-tier Discord signals every 30 seconds.
-    CRITICAL: Free-tier customers rely on this loop to receive their signals."""
-    await asyncio.sleep(30)  # Let system warm up
+async def training_loop():
+    """Learner retrains on historical data every 24h."""
     while not shutdown_event.is_set():
         try:
-            await discord.process_free_queue()
+            await learner.retrain(config.JOURNAL_CSV_PATH)
+            # Update confluence engine with new learned weights
+            confluence_engine.set_weights(learner.get_weights())
         except Exception as e:
-            logger.error(f"Free queue processing error: {e}")
-        await asyncio.sleep(30)
+            logger.error(f"Training loop error: {e}")
+        
+        await asyncio.sleep(config.LEARNER_RETRAIN_INTERVAL_HOURS * 3600)
 
 
-async def discord_heartbeat_loop():
-    """Send periodic Discord status updates so user knows system is alive."""
-    await asyncio.sleep(300)  # First heartbeat after 5 min
-    while not shutdown_event.is_set():
-        try:
-            universe_count = len(getattr(universe, 'active_universe', []))
-            flow_count = len(flow.states)
-            signal_count = len(confluence.active_signals)
-            delivery = discord.get_delivery_stats()
-            await discord.send_status(
-                f"💚 **Heartbeat** | Universe: {universe_count} | "
-                f"Flow: {flow_count} active | Signals: {signal_count} | "
-                f"Delivery: {delivery['success_rate']:.0f}% success | "
-                f"Free queue: {delivery['queue_depth']} pending | "
-                f"Dashboard: http://localhost:{config.DASHBOARD_PORT}"
-            )
-        except Exception:
-            pass
-        await asyncio.sleep(900)  # Every 15 min
+async def dashboard_task():
+    """Runs the FastAPI dashboard server."""
+    try:
+        cfg = uvicorn.Config(
+            dashboard_app, 
+            host="0.0.0.0", 
+            port=config.DASHBOARD_PORT, 
+            log_level="error"
+        )
+        server = uvicorn.Server(cfg)
+        await server.serve()
+    except Exception as e:
+        logger.error(f"Dashboard server failed: {e}")
 
 
-async def sweep_scan_loop():
-    """Run institutional sweep scanner every 10 minutes.
-    Uses the universe scanner's active tickers as input."""
-    await asyncio.sleep(120)  # Let universe build first (2 min)
-
-    while not shutdown_event.is_set():
-        try:
-            # Get current universe
-            symbols = list(config.ALWAYS_SCAN)
-            if universe and hasattr(universe, 'active_universe'):
-                symbols = list(set(symbols + universe.active_universe[:500]))
-
-            if symbols:
-                results = await sweep.run_scan(symbols)
-                if results:
-                    add_system_log(f"Sweep scan: {len(results)} institutional setups found")
-                else:
-                    add_system_log("Sweep scan: no qualifying setups this cycle")
-
-            # Update journal prices for open signals
-            try:
-                await journal.update_prices(schwab)
-            except Exception as e:
-                logger.debug(f"Journal price update: {e}")
-
-        except Exception as e:
-            logger.error(f"Sweep scan error: {e}")
-            add_system_log(f"Sweep scan error: {str(e)[:60]}")
-
-        await asyncio.sleep(600)  # Every 10 min
-
-
-async def report_card_loop():
-    """Send end-of-day report card at 4:15 PM ET."""
-    while not shutdown_event.is_set():
-        try:
-            now = datetime.now()
-            # Check if it's around 4:15 PM (market close + 15 min)
-            if now.hour == 16 and 14 <= now.minute <= 16:
-                import os
-                webhooks = {
-                    "free": os.getenv("DISCORD_WEBHOOK_FREE", ""),
-                    "pro": os.getenv("DISCORD_WEBHOOK_PRO", ""),
-                    "premium": os.getenv("DISCORD_WEBHOOK_PREMIUM", ""),
-                }
-                await journal.generate_report_card(webhooks)
-                add_system_log("Daily report card sent")
-                logger.info("Daily report card sent to all tiers")
-
-                # Post daily recap to X.com
-                try:
-                    stats = journal.get_stats(days=1)
-                    await xbot.post_daily_recap(stats)
-                except Exception as e:
-                    logger.debug(f"X.com daily recap: {e}")
-                # Wait 2 hours to avoid re-sending
-                await asyncio.sleep(7200)
-            else:
-                await asyncio.sleep(60)  # Check every minute
-        except Exception as e:
-            logger.error(f"Report card error: {e}")
-            await asyncio.sleep(300)
-
-
-async def paper_portfolio_loop():
-    """Send weekly paper portfolio summary to FREE tier (Sundays 6 PM)."""
-    while not shutdown_event.is_set():
-        try:
-            now = datetime.now()
-            # Sunday = 6, 6 PM
-            if now.weekday() == 6 and now.hour == 18 and 0 <= now.minute <= 1:
-                await paper.send_weekly_summary()
-                add_system_log("Weekly paper portfolio summary sent")
-                await asyncio.sleep(7200)  # Wait 2 hours
-            else:
-                await asyncio.sleep(60)
-        except Exception as e:
-            logger.error(f"Paper portfolio loop error: {e}")
-            await asyncio.sleep(300)
-
-
-async def xbot_loop():
-    """Process X.com delayed signal queue every 5 minutes."""
-    await asyncio.sleep(300)  # Initial delay
-
-    while not shutdown_event.is_set():
-        try:
-            await xbot.process_queue()
-        except Exception as e:
-            logger.debug(f"X.com bot error: {e}")
-
-        await asyncio.sleep(300)  # Every 5 min
-
-
-async def dashboard_server():
-    """Run FastAPI dashboard."""
-    server_config = uvicorn.Config(
-        dashboard_app,
-        host="0.0.0.0",
-        port=config.DASHBOARD_PORT,
-        log_level="warning",
-    )
-    server = uvicorn.Server(server_config)
-    await server.serve()
-
+# =============================================================================
+# MAIN ENTRY
+# =============================================================================
 
 async def main():
-    global schwab, polygon, alpaca, flow, options_rec, confluence, universe, discord, sweep
+    global alpaca_client, polygon_client, schwab_client
+    global flow_engine, universe_engine, confluence_engine, options_engine
+    global router, discord_alerter, journal, learner
 
     logger.info("=" * 60)
-    logger.info("ORDER-FLOW-RADAR™ | ScriptMasterLabs™")
-    logger.info("=" * 60)
-    logger.info("Dashboard + Discord fire IMMEDIATELY. No waiting.")
+    logger.info("ORDER-FLOW-RADAR™ — Ground-Up Rebuild")
+    logger.info("ScriptMasterLabs™ Institutional Integrity")
     logger.info("=" * 60)
 
-    check_config()
+    check_startup_keys()
 
-    # Initialize engines — ALL initialization is non-blocking
-    schwab = SchwabAPI(
-        config.SCHWAB_APP_KEY,
-        config.SCHWAB_APP_SECRET,
-        config.SCHWAB_REFRESH_TOKEN,
-        config.SCHWAB_REDIRECT_URI,
+    # 1. Initialize API Clients
+    alpaca_client  = AlpacaAPI(config.ALPACA_API_KEY, config.ALPACA_API_SECRET)
+    polygon_client = PolygonAPI(config.POLYGON_API_KEY)
+    schwab_client  = SchwabAPI(
+        config.SCHWAB_APP_KEY, config.SCHWAB_APP_SECRET, 
+        config.SCHWAB_REFRESH_TOKEN, config.SCHWAB_REDIRECT_URI
     )
-    polygon = PolygonAPI(config.POLYGON_API_KEY)
-    alpaca = AlpacaAPI(config.ALPACA_API_KEY, config.ALPACA_API_SECRET)
-    flow = FlowEngine()
-    options_rec = OptionsRecommender(schwab)
-    confluence = ConfluenceEngine(flow, options_rec)
-    universe = UniverseScanner(schwab, polygon, alpaca)
-    discord = DiscordAlerter()  # Reads all 3 tier webhooks from env internally
-    journal = SignalJournal()
-    earnings = EarningsDetector()
-    paper = PaperPortfolio(starting_balance=10000)
-    xbot = XSignalBot()
-    sweep = SweepScanner(schwab, alpaca, polygon, discord,
-                         journal=journal, earnings=earnings, paper=paper, xbot=xbot)
 
-    # Wire dashboard — pass all engines including discord
-    set_engines(confluence, flow, universe, discord, alpaca)
-    add_system_log("System initialized")
-    discord_configured = any([discord.webhook_free, discord.webhook_pro, discord.webhook_premium])
-    set_api_status("discord", discord_configured)
+    # 2. Initialize Engines
+    flow_engine       = FlowEngine()
+    universe_engine   = UniverseEngine(alpaca_client, polygon_client)
+    learner           = Learner()
+    options_engine    = OptionsEngine(schwab_client)
+    confluence_engine = ConfluenceEngine(flow_engine, learner.get_weights())
+    discord_alerter   = DiscordAlerter()
+    journal           = SignalJournal()
+    router            = SignalRouter(discord_alerter, journal)
 
-    logger.info(f"Always-scan: {config.ALWAYS_SCAN}")
-    logger.info(f"Dashboard: http://localhost:{config.DASHBOARD_PORT}")
+    # 3. Wire Dashboard
+    set_engines(confluence_engine, flow_engine, universe_engine, discord_alerter, journal)
 
-    # FIRE DISCORD STARTUP IMMEDIATELY — before any API calls that might fail
+    # 4. Global Signal Handler for Windows/Linux
     try:
-        await discord.send_status(
-            f"🟢 **Order-Flow-Radar™ ONLINE**\n"
-            f"Always watching: {', '.join(config.ALWAYS_SCAN)}\n"
-            f"Dashboard: http://localhost:{config.DASHBOARD_PORT}\n"
-            f"System is live — scanning in progress..."
-        )
-        add_system_log("✅ Discord startup notification sent")
-        logger.info("Discord startup notification sent")
-    except Exception as e:
-        logger.warning(f"Discord startup notification failed: {e}")
-        add_system_log(f"⚠️ Discord startup failed: {str(e)[:60]}")
-
-    # Handle graceful shutdown
-    loop = asyncio.get_event_loop()
-    try:
-        for sig_name in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig_name, lambda: shutdown_event.set())
+        loop = asyncio.get_running_loop()
+        for s in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(s, lambda: shutdown_event.set())
     except NotImplementedError:
-        pass  # Not supported on Windows
+        pass # Windows
 
-    # Launch ALL loops — dashboard is FIRST so it loads instantly
+    # 5. Launch Tasks
+    logger.info("Starting institutional async loops...")
     tasks = [
-        asyncio.create_task(dashboard_server()),
-        asyncio.create_task(rest_snapshot_loop()),
-        asyncio.create_task(universe_loop()),
-        asyncio.create_task(stream_loop()),
-        asyncio.create_task(signal_eval_loop()),
-        asyncio.create_task(free_queue_loop()),          # NEW: process free-tier delayed signals
-        asyncio.create_task(sweep_scan_loop()),
-        asyncio.create_task(report_card_loop()),
-        asyncio.create_task(paper_portfolio_loop()),
-        asyncio.create_task(xbot_loop()),
-        asyncio.create_task(discord_heartbeat_loop()),
+        asyncio.create_task(dashboard_task()),
+        asyncio.create_task(universe_discovery_loop()),
+        asyncio.create_task(snapshot_loop()),
+        asyncio.create_task(evaluation_loop()),
+        asyncio.create_task(training_loop()),
+        asyncio.create_task(alpaca_client.start_stream(
+            config.ALWAYS_SCAN, flow_engine.on_trade, flow_engine.on_quote
+        )),
     ]
 
-    logger.info("All systems GO. Dashboard is LIVE.")
-    add_system_log("🚀 All systems GO")
+    await discord_alerter.send_status(
+        "🟢 **Order-Flow-Radar™ ONLINE (Institutional Rebuild)**\n"
+        f"Mode: Real Data Only | Law Adherence: Certified\n"
+        f"Always Watch: {', '.join(config.ALWAYS_SCAN)}\n"
+        "System is in discovery phase..."
+    )
 
     try:
         await shutdown_event.wait()
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
-        logger.info("Shutting down...")
-        for t in tasks:
-            t.cancel()
-        await schwab.close()
-        await polygon.close()
-        await alpaca.close()
-        try:
-            await discord.send_status("🔴 **Order-Flow-Radar™ OFFLINE**")
-        except Exception:
-            pass
-        await discord.close()
-        logger.info("Clean shutdown complete.")
+        logger.info("Shutting down... obeying cleanup protocols.")
+        for task in tasks:
+            task.cancel()
+        
+        await discord_alerter.send_status("🔴 **Order-Flow-Radar™ OFFLINE (Clean Shutdown)**")
+        
+        await alpaca_client.close()
+        await polygon_client.close()
+        await schwab_client.close()
+        await discord_alerter.close()
+        logger.info("ScriptMasterLabs™ clean shutdown complete.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

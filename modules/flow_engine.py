@@ -1,183 +1,234 @@
 """
-Flow Engine — Real-time order flow analysis from Alpaca trade stream.
-Tracks: CVD (cumulative volume delta), bid/ask imbalance, volume spikes,
-aggressive buyer/seller detection. No fake data.
+Order Flow Radar™ — Flow Engine
+ScriptMasterLabs™
+
+LAW 1.2 COMPLIANCE: Volume delta classification via Tick Rule ONLY.
+  - Uptick   (price > last_price) → trade is a BUY  → delta += size
+  - Downtick (price < last_price) → trade is a SELL → delta -= size
+  - Neutral  (price == last_price) → delta += 0 (ZERO — not estimated)
+
+FORBIDDEN: Any ratio-based split, buy_ratio, 0.70/0.30 allocation,
+or any method that invents a buy/sell classification without a real
+observed price direction. See AGENT_LAW.md Law 1.2.
 """
-import time
+from __future__ import annotations
 import logging
-from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, Optional
 
 import config
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("flow_engine")
 
 
-class FlowState:
-    """Per-symbol flow state maintained in memory."""
-    __slots__ = [
-        "symbol", "last_price", "bid", "ask", "spread",
-        "buy_volume", "sell_volume", "total_volume",
-        "cvd", "cvd_history", "trade_history",
-        "large_buy_count", "large_sell_count",
-        "last_update", "volume_ma", "prev_volumes",
-    ]
+@dataclass
+class TickerState:
+    """Real-time state for a single symbol. All values from live market data."""
+    symbol: str
 
-    def __init__(self, symbol: str):
-        self.symbol = symbol
-        self.last_price = 0.0
-        self.bid = 0.0
-        self.ask = 0.0
-        self.spread = 0.0
-        self.buy_volume = 0
-        self.sell_volume = 0
-        self.total_volume = 0
-        self.cvd = 0.0
-        self.cvd_history: deque = deque(maxlen=500)
-        self.trade_history: deque = deque(maxlen=1000)
-        self.large_buy_count = 0
-        self.large_sell_count = 0
-        self.last_update = 0.0
-        self.volume_ma = 0.0
-        self.prev_volumes: deque = deque(maxlen=20)
+    # Price — from latest real trade
+    last_price: float = 0.0
+    prev_price: float = 0.0   # Used for tick rule direction
+
+    # OHLCV — from real bars
+    open: float = 0.0
+    high: float = 0.0
+    low: float = 0.0
+    close: float = 0.0
+    volume: int = 0
+
+    # Bid/Ask — from real quotes
+    bid: float = 0.0
+    ask: float = 0.0
+    spread: float = 0.0
+
+    # CVD — computed via Tick Rule only (Law 1.2)
+    buy_volume:  int = 0
+    sell_volume: int = 0
+    neutral_volume: int = 0    # Neutral ticks — NOT allocated to either side
+    total_volume: int = 0
+    cvd: float = 0.0           # Cumulative Volume Delta = buy_vol - sell_vol
+
+    # Block trade tracking
+    large_buy_count:  int = 0
+    large_sell_count: int = 0
+
+    # Signal state
+    last_signal_at: Optional[datetime] = None
+    signal_count: int = 0
+
+    # Timestamps
+    last_trade_at: Optional[datetime] = None
+    last_quote_at: Optional[datetime] = None
+    last_bar_at:   Optional[datetime] = None
+
+    @property
+    def cvd_ratio(self) -> float:
+        """Buy volume as fraction of classified volume. Returns 0.5 if no data."""
+        classified = self.buy_volume + self.sell_volume
+        if classified == 0:
+            return 0.5
+        return self.buy_volume / classified
+
+    @property
+    def spread_pct(self) -> float:
+        """Bid-ask spread as % of mid price."""
+        mid = (self.bid + self.ask) / 2
+        if mid <= 0:
+            return 0.0
+        return (self.spread / mid) * 100
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "last_price": self.last_price,
+            "bid": self.bid,
+            "ask": self.ask,
+            "spread_pct": round(self.spread_pct, 4),
+            "buy_volume": self.buy_volume,
+            "sell_volume": self.sell_volume,
+            "neutral_volume": self.neutral_volume,
+            "total_volume": self.total_volume,
+            "cvd": round(self.cvd, 2),
+            "cvd_ratio": round(self.cvd_ratio, 4),
+            "large_buy_count": self.large_buy_count,
+            "large_sell_count": self.large_sell_count,
+            "last_trade_at": self.last_trade_at.isoformat() if self.last_trade_at else None,
+        }
 
 
 class FlowEngine:
-    def __init__(self):
-        self.states: dict[str, FlowState] = {}
-        self._large_trade_threshold = 10000  # $10k+ = large trade
+    """
+    Maintains real-time TickerState for all symbols.
+    Implements Tick Rule CVD as the ONLY volume classification method.
 
-    def get_state(self, symbol: str) -> FlowState:
+    See AGENT_LAW.md Law 1.2:
+    'Real-time volume must be strictly classified via the Tick Rule
+    or exchange-provided side. If the side is unknown, the volume delta is 0.'
+    """
+
+    def __init__(self):
+        self.states: Dict[str, TickerState] = {}
+        # Pre-populate always-scan symbols
+        for sym in config.ALWAYS_SCAN:
+            self.states[sym] = TickerState(symbol=sym)
+        logger.info(f"FlowEngine initialized | Always-scan: {config.ALWAYS_SCAN}")
+
+    def get_state(self, symbol: str) -> TickerState:
         if symbol not in self.states:
-            self.states[symbol] = FlowState(symbol)
+            self.states[symbol] = TickerState(symbol=symbol)
         return self.states[symbol]
 
-    async def on_trade(self, symbol: str, event: dict):
-        """Process a real-time trade event from Alpaca."""
-        state = self.get_state(symbol)
-        price = event.get("p", 0.0)
-        size = event.get("s", 0)
-        timestamp = time.time()
+    def on_trade(self, symbol: str, price: float, size: int, conditions: list = None, side: str = None):
+        """
+        Process a real trade tick.
 
+        LAW 1.2: Classification priority:
+          1. Exchange-provided side (if available in trade conditions)
+          2. Tick Rule: compare price to previous price
+          3. Neutral tick: delta = 0
+
+        NEVER invents a side. NEVER uses ratio-based estimation.
+        """
         if price <= 0 or size <= 0:
             return
 
-        state.last_price = price
-        state.last_update = timestamp
-        notional = price * size
+        state = self.get_state(symbol)
+        now = datetime.utcnow()
+        state.last_trade_at = now
+        state.total_volume += size
 
-        # Classify as buy or sell using tick rule
-        is_buy = True
-        if state.bid > 0 and state.ask > 0:
-            mid = (state.bid + state.ask) / 2.0
-            is_buy = price >= mid
-        elif len(state.trade_history) > 0:
-            prev_price = state.trade_history[-1]["price"]
-            is_buy = price >= prev_price
+        # ── Determine trade side ──────────────────────────────────────────────
+        # Priority 1: Exchange-provided side from trade tape conditions
+        classified_side = None
+        if side and side.upper() in ("B", "BUY", "BID"):
+            classified_side = "buy"
+        elif side and side.upper() in ("S", "SELL", "ASK"):
+            classified_side = "sell"
 
-        if is_buy:
+        # Priority 2: Tick Rule (requires a previous price to compare)
+        elif state.prev_price > 0:
+            if price > state.prev_price:
+                classified_side = "buy"    # Uptick
+            elif price < state.prev_price:
+                classified_side = "sell"   # Downtick
+            else:
+                classified_side = "neutral"  # Neutral tick — delta = 0
+
+        # Priority 3: First trade with no prior reference — neutral
+        else:
+            classified_side = "neutral"
+
+        # ── Apply classification ───────────────────────────────────────────────
+        if classified_side == "buy":
             state.buy_volume += size
             state.cvd += size
-            if notional >= self._large_trade_threshold:
+            if size >= config.LARGE_TRADE_THRESHOLD:
                 state.large_buy_count += 1
-        else:
+        elif classified_side == "sell":
             state.sell_volume += size
             state.cvd -= size
-            if notional >= self._large_trade_threshold:
+            if size >= config.LARGE_TRADE_THRESHOLD:
                 state.large_sell_count += 1
+        else:
+            # Neutral tick: volume counted in total but NOT in CVD (Law 1.2)
+            state.neutral_volume += size
 
-        state.total_volume += size
-        state.cvd_history.append({"t": timestamp, "cvd": state.cvd})
-        state.trade_history.append({
-            "t": timestamp, "price": price, "size": size,
-            "side": "buy" if is_buy else "sell", "notional": notional,
-        })
+        # ── Update price ───────────────────────────────────────────────────────
+        state.prev_price = state.last_price if state.last_price > 0 else price
+        state.last_price = price
 
-    async def on_quote(self, symbol: str, event: dict):
-        """Process a real-time quote event."""
+    def on_quote(self, symbol: str, bid: float, ask: float):
+        """Process a real bid/ask quote update."""
+        if bid <= 0 or ask <= 0:
+            return
         state = self.get_state(symbol)
-        state.bid = event.get("bp", 0.0)
-        state.ask = event.get("ap", 0.0)
-        if state.bid > 0 and state.ask > 0:
-            state.spread = state.ask - state.bid
+        state.bid = bid
+        state.ask = ask
+        state.spread = ask - bid
+        state.last_quote_at = datetime.utcnow()
 
-    def get_flow_score(self, symbol: str) -> dict:
-        """
-        Compute flow score for a symbol.
-        Returns dict with all flow metrics + composite score 0-100.
-        """
+    def on_bar(self, symbol: str, o: float, h: float, l: float, c: float, v: int):
+        """Process a completed bar (from REST or WebSocket bars feed)."""
         state = self.get_state(symbol)
-        if state.total_volume == 0:
-            return {"symbol": symbol, "score": 0, "direction": "neutral", "metrics": {}}
+        state.open = o
+        state.high = max(state.high, h) if state.high > 0 else h
+        state.low = min(state.low, l) if state.low > 0 else l
+        state.close = c
+        # Update last_price from bar close if no real-time trade yet
+        if state.last_price == 0 and c > 0:
+            state.prev_price = c
+            state.last_price = c
+        if state.last_price == 0:  # safety
+            state.last_price = c
+        state.last_bar_at = datetime.utcnow()
 
-        # Buy/sell ratio
-        buy_pct = state.buy_volume / state.total_volume * 100 if state.total_volume > 0 else 50
-        sell_pct = 100 - buy_pct
+    def inject_price_only(self, symbol: str, price: float):
+        """
+        Inject a price from REST snapshot when only the last trade price is known
+        and no size is available. Does NOT affect CVD.
+        Used only to initialize last_price for display purposes.
+        """
+        if price <= 0:
+            return
+        state = self.get_state(symbol)
+        if state.last_price == 0:
+            state.last_price = price
+            state.prev_price = price
 
-        # CVD trend (last 100 trades)
-        cvd_trend = 0.0
-        if len(state.cvd_history) >= 10:
-            recent = list(state.cvd_history)[-50:]
-            early = list(state.cvd_history)[-100:-50] if len(state.cvd_history) >= 100 else list(state.cvd_history)[:len(recent)]
-            if early:
-                cvd_now = recent[-1]["cvd"]
-                cvd_then = early[0]["cvd"]
-                cvd_trend = cvd_now - cvd_then
+    def add_symbol(self, symbol: str):
+        """Register a symbol discovered by the universe engine."""
+        if symbol not in self.states:
+            self.states[symbol] = TickerState(symbol=symbol)
 
-        # Large trade imbalance
-        large_total = state.large_buy_count + state.large_sell_count
-        large_buy_pct = state.large_buy_count / large_total * 100 if large_total > 0 else 50
+    def active_symbols(self) -> list:
+        return list(self.states.keys())
 
-        # Spread score — institutional grade (0.1% to 1.5% is common range)
-        spread_score = 100
-        if state.last_price > 0:
-            spread_pct = state.spread / state.last_price * 100
-            # Standard spread scoring: tight = liquid. Penalty factor from config.
-            spread_score = max(0, min(100, 100 - (spread_pct * config.SPREAD_PENALTY_MULT)))
-
-        # Composite scoring
-        # Direction: positive = bullish, negative = bearish
-        direction_raw = (buy_pct - 50) * 2  # -100 to +100
-
-        # Weight large trades more heavily using LARGE_TRADE_WEIGHT
-        if large_total >= 3:
-            direction_raw = direction_raw * (1 - config.LARGE_TRADE_WEIGHT) + (large_buy_pct - 50) * 2 * config.LARGE_TRADE_WEIGHT
-
-        # CVD confirmation — ensure this is symmetric and properly handles neutral tape
-        cvd_confirms = (cvd_trend > 0 and direction_raw > 0) or (cvd_trend < 0 and direction_raw < 0)
-
-        # Final score 0-100 (how strong is the signal)
-        intensity = abs(direction_raw)
-        
-        # Boost if confirming CVD using parameters from config
-        if cvd_confirms:
-            intensity = min(100, intensity * config.CVD_BOOST_FACTOR)
-        elif abs(cvd_trend) < 500: # Neutral tape doesn't penalize
-            intensity = min(100, intensity * config.NEUTRAL_TAPE_BOOST)
-
-        score = min(100, intensity * (spread_score / 100) if spread_score > 0 else intensity * 0.7)
-
-        # Refined direction thresholds — ±8 to be slightly more responsive than ±10
-        direction = "bullish" if direction_raw > 8 else "bearish" if direction_raw < -8 else "neutral"
-
-        return {
-            "symbol": symbol,
-            "score": round(score, 1),
-            "direction": direction,
-            "last_price": state.last_price,
-            "metrics": {
-                "buy_pct": round(buy_pct, 1),
-                "sell_pct": round(sell_pct, 1),
-                "cvd": round(state.cvd, 0),
-                "cvd_trend": round(cvd_trend, 0),
-                "large_buys": state.large_buy_count,
-                "large_sells": state.large_sell_count,
-                "spread": round(state.spread, 4),
-                "spread_score": round(spread_score, 1),
-                "total_volume": state.total_volume,
-            },
-        }
-
-    def reset_session(self, symbol: str):
-        """Reset flow state for a new session."""
-        if symbol in self.states:
-            self.states[symbol] = FlowState(symbol)
+    def snapshot(self) -> list:
+        """Current state of all symbols with price data."""
+        return [
+            s.to_dict()
+            for s in self.states.values()
+            if s.last_price > 0
+        ]

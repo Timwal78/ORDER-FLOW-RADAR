@@ -1,0 +1,12 @@
+.env
+.env.bak
+.env.example
+.env.template
+.git
+.gitignore
+__pycache__
+*.pyc
+tests/
+signal_data/*
+AGENT_LAW.md.bak
+requirements.txt.bak

@@ -1,125 +1,233 @@
 """
-Alpaca API — REST for asset universe + websocket for real-time trades/quotes.
-Free tier: unlimited websocket for IEX data. No fake data.
+Order Flow Radar™ — Alpaca API Client
+ScriptMasterLabs™
+
+Handles:
+  - WebSocket stream: real-time trades & quotes (tick-rule CVD source)
+  - REST snapshots: price initialization for discovered symbols
+  - No mock data. No fallbacks. If Alpaca fails → log error, continue.
 """
+from __future__ import annotations
 import asyncio
 import json
-import aiohttp
 import logging
-from datetime import datetime
+from typing import Callable, Optional, List
 
-logger = logging.getLogger("alpaca")
+import aiohttp
 
-REST_BASE = "https://paper-api.alpaca.markets"
-DATA_REST = "https://data.alpaca.markets"
-WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
+import config
+
+logger = logging.getLogger("alpaca_api")
+
+_WS_URL_STOCKS = "wss://stream.data.alpaca.markets/v2/iex"
+_REST_BASE      = "https://data.alpaca.markets"
+_BROKER_BASE    = "https://api.alpaca.markets"
+
+# Global health status for the dashboard
+api_health = {
+    "alpaca_ws": "OFFLINE",
+    "alpaca_rest": "READY",
+    "polygon": "READY",
+    "schwab": "READY"
+}
 
 
 class AlpacaAPI:
+    """
+    Alpaca WebSocket + REST client.
+    Real data only — trade/quote events directly feed FlowEngine.
+    """
+
     def __init__(self, api_key: str, api_secret: str):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self._session: aiohttp.ClientSession | None = None
-        self._ws = None
-        self._subscribers: dict[str, list] = {}  # symbol -> [callbacks]
-
-    def _headers(self) -> dict:
-        return {
-            "APCA-API-KEY-ID": self.api_key,
-            "APCA-API-SECRET-KEY": self.api_secret,
+        self._key    = api_key
+        self._secret = api_secret
+        self._headers = {
+            "APCA-API-KEY-ID":     api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+            "Accept": "application/json",
         }
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._ws               = None
+        self._subscribed: set  = set()
+        self._on_trade: Optional[Callable] = None
+        self._on_quote: Optional[Callable] = None
+        self._running  = False
 
-    async def _get_session(self) -> aiohttp.ClientSession:
+    def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         return self._session
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # WebSocket Stream
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def start_stream(
+        self,
+        symbols: List[str],
+        on_trade: Callable,
+        on_quote: Callable,
+    ):
+        """
+        Connect to Alpaca IEX WebSocket and stream real trades/quotes.
+        Reconnects automatically on disconnect.
+        """
+        self._on_trade = on_trade
+        self._on_quote = on_quote
+        self._running  = True
+
+        while self._running:
+            try:
+                await self._connect_and_stream(symbols)
+            except Exception as e:
+                logger.error(f"Stream error: {e}. Reconnecting in 5s...")
+                await asyncio.sleep(5)
+
+    async def _connect_and_stream(self, symbols: List[str]):
+        import websockets
+        async with websockets.connect(
+            _WS_URL_STOCKS,
+            additional_headers={
+                "APCA-API-KEY-ID":     self._key,
+                "APCA-API-SECRET-KEY": self._secret,
+            },
+            ping_interval=20,
+            ping_timeout=30,
+        ) as ws:
+            self._ws = ws
+            api_health["alpaca_ws"] = "CONNECTED"
+            logger.info("Alpaca WebSocket connected")
+
+            # Auth
+            await ws.send(json.dumps({"action": "auth", "key": self._key, "secret": self._secret}))
+
+            # Subscribe to initial symbols
+            if symbols:
+                await ws.send(json.dumps({
+                    "action": "subscribe",
+                    "trades": symbols,
+                    "quotes": symbols,
+                }))
+                self._subscribed = set(symbols)
+                logger.info(f"Subscribed to {len(symbols)} symbols")
+
+            async for raw in ws:
+                msgs = json.loads(raw)
+                for msg in (msgs if isinstance(msgs, list) else [msgs]):
+                    await self._dispatch(msg)
+
+    async def _dispatch(self, msg: dict):
+        t = msg.get("T")
+        if t == "t":   # Trade
+            sym   = msg.get("S", "")
+            price = float(msg.get("p", 0) or 0)
+            size  = int(msg.get("s", 0) or 0)
+            conds = msg.get("c", [])
+            # Alpaca does not provide explicit side in IEX feed — Tick Rule applied by FlowEngine
+            if self._on_trade and sym and price > 0:
+                self._on_trade(sym, price, size, conds)
+
+        elif t == "q":  # Quote
+            sym = msg.get("S", "")
+            bid = float(msg.get("bp", 0) or 0)
+            ask = float(msg.get("ap", 0) or 0)
+            if self._on_quote and sym and bid > 0 and ask > 0:
+                self._on_quote(sym, bid, ask)
+
+        elif t == "error":
+            logger.error(f"Alpaca WS error: {msg}")
+
+    async def update_subscription(self, symbols: List[str]):
+        """Update WebSocket subscription when universe changes."""
+        if not self._ws:
+            return
+        try:
+            new_syms = [s for s in symbols if s not in self._subscribed]
+            if new_syms:
+                await self._ws.send(json.dumps({
+                    "action": "subscribe",
+                    "trades": new_syms,
+                    "quotes": new_syms,
+                }))
+                self._subscribed.update(new_syms)
+                logger.info(f"Subscribed to {len(new_syms)} new symbols (total: {len(self._subscribed)})")
+        except Exception as e:
+            logger.warning(f"Subscription update failed: {e}")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # REST — Snapshots (price initialization only — NO volume classification)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def get_snapshots(self, symbols: List[str]) -> dict:
+        """
+        Fetch REST snapshots for price initialization.
+        Returns raw snapshot dicts keyed by symbol.
+        Volume from snapshots is NOT used for CVD (no tick rule possible on aggregated data).
+        """
+        if not symbols:
+            return {}
+
+        session = self._get_session()
+        result  = {}
+
+        # Batch to avoid URL length limit
+        batch_size = 100
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i : i + batch_size]
+            try:
+                async with session.get(
+                    f"{_REST_BASE}/v2/stocks/snapshots",
+                    headers=self._headers,
+                    params={"symbols": ",".join(batch)},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        result.update(data or {})
+                    else:
+                        body = await resp.text()
+                        logger.error(f"Snapshot {resp.status}: {body[:120]}")
+            except Exception as e:
+                logger.error(f"Snapshot fetch error (batch {i}): {e}")
+
+            await asyncio.sleep(0.05)
+
+        return result
+
+    async def get_most_actives(self, top: int = 1000) -> List[str]:
+        """
+        Fetch most-active US stocks from Alpaca screener.
+        Returns symbol list — no slice limits applied here (caller decides).
+        """
+        session = self._get_session()
+        try:
+            async with session.get(
+                f"{_BROKER_BASE}/v1beta1/screener/stocks/most-active",
+                headers=self._headers,
+                params={"top": top, "by": "volume"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    stocks = data.get("most_active", [])
+                    api_health["alpaca_rest"] = "READY"
+                    return [s["symbol"] for s in stocks if s.get("symbol")]
+                else:
+                    body = await resp.text()
+                    logger.error(f"Most-actives {resp.status}: {body[:120]}")
+                    api_health["alpaca_rest"] = f"ERROR {resp.status}"
+                    return []
+        except Exception as e:
+            logger.error(f"Most-actives fetch error: {e}")
+            api_health["alpaca_rest"] = "OFFLINE"
+            return []
+
     async def close(self):
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
+        self._running = False
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
         if self._session and not self._session.closed:
             await self._session.close()
-
-    async def get_active_assets(self) -> list[dict]:
-        """All active US equities tradable on Alpaca. This IS the universe."""
-        session = await self._get_session()
-        url = f"{REST_BASE}/v2/assets"
-        params = {"status": "active", "asset_class": "us_equity"}
-        async with session.get(url, headers=self._headers(), params=params) as resp:
-            if resp.status != 200:
-                logger.warning(f"Alpaca assets → {resp.status}")
-                return []
-            return await resp.json()
-
-    async def get_bars(self, symbol: str, timeframe: str = "1Day", limit: int = 30) -> list[dict]:
-        """Historical bars for a symbol."""
-        session = await self._get_session()
-        url = f"{DATA_REST}/v2/stocks/{symbol}/bars"
-        params = {"timeframe": timeframe, "limit": limit, "adjustment": "split"}
-        async with session.get(url, headers=self._headers(), params=params) as resp:
-            if resp.status != 200:
-                return []
-            data = await resp.json()
-            return data.get("bars", [])
-
-    async def get_latest_trades(self, symbols: list[str]) -> dict:
-        """Latest trade for multiple symbols."""
-        session = await self._get_session()
-        url = f"{DATA_REST}/v2/stocks/trades/latest"
-        params = {"symbols": ",".join(symbols)}
-        async with session.get(url, headers=self._headers(), params=params) as resp:
-            if resp.status != 200:
-                return {}
-            data = await resp.json()
-            return data.get("trades", {})
-
-    async def start_stream(self, symbols: list[str], on_trade=None, on_quote=None):
-        """Connect to Alpaca IEX websocket for real-time trades/quotes."""
-        session = await self._get_session()
-        self._ws = await session.ws_connect(WS_URL)
-
-        # Auth
-        await self._ws.send_json({
-            "action": "auth",
-            "key": self.api_key,
-            "secret": self.api_secret,
-        })
-        auth_resp = await self._ws.receive_json()
-        logger.info(f"Alpaca WS auth: {auth_resp}")
-
-        # Subscribe
-        sub_msg = {"action": "subscribe"}
-        if on_trade:
-            sub_msg["trades"] = symbols
-        if on_quote:
-            sub_msg["quotes"] = symbols
-        await self._ws.send_json(sub_msg)
-        sub_resp = await self._ws.receive_json()
-        logger.info(f"Alpaca WS subscribed: {len(symbols)} symbols")
-
-        # Listen loop
-        async for msg in self._ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                events = json.loads(msg.data)
-                for event in events:
-                    t = event.get("T")
-                    sym = event.get("S", "")
-                    if t == "t" and on_trade:
-                        await on_trade(sym, event)
-                    elif t == "q" and on_quote:
-                        await on_quote(sym, event)
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                logger.warning("Alpaca WS closed/error, reconnecting in 5s...")
-                await asyncio.sleep(5)
-                await self.start_stream(symbols, on_trade, on_quote)
-                return
-
-    async def update_subscription(self, symbols: list[str], trades: bool = True, quotes: bool = True):
-        """Update websocket subscription without reconnecting."""
-        if self._ws and not self._ws.closed:
-            sub_msg = {"action": "subscribe"}
-            if trades:
-                sub_msg["trades"] = symbols
-            if quotes:
-                sub_msg["quotes"] = symbols
-            await self._ws.send_json(sub_msg)
