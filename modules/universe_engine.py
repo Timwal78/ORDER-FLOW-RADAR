@@ -16,6 +16,7 @@ import logging
 from datetime import datetime
 from typing import List, Set, Optional
 
+import config
 from modules.alpaca_api import AlpacaAPI
 from modules.polygon_api import PolygonAPI
 from modules.yfinance_api import YahooDiscovery
