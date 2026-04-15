@@ -20,8 +20,10 @@ ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY", "")
 ALPACA_API_SECRET = os.getenv("ALPACA_SECRET_KEY", "")
 POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY", "")
 ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
 
 SCHWAB_APP_KEY       = os.getenv("SCHWAB_APP_KEY", "")
+# ... (rest of keys) ...
 SCHWAB_APP_SECRET    = os.getenv("SCHWAB_APP_SECRET", "")
 SCHWAB_REFRESH_TOKEN = os.getenv("SCHWAB_REFRESH_TOKEN", "")
 SCHWAB_REDIRECT_URI  = os.getenv("SCHWAB_REDIRECT_URI", "https://127.0.0.1")
@@ -91,6 +93,17 @@ MOMENTUM_EMA_SLOW = int(os.getenv("MOMENTUM_EMA_SLOW", "21"))
 # MIN_CONFLUENCE_SCORE: Signals below this score are discarded (not shown, not alerted)
 # Justification: Quality gate — eliminates noise signals
 MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", "60.0"))
+
+# =============================================================================
+# INTELLIGENCE OVERLAY
+# =============================================================================
+# SENTIMENT_WEIGHT: Multiplier for Alpha Vantage news sentiment scores
+# Justification: News alignment serves as a macro-filter for technical setups
+SENTIMENT_WEIGHT = float(os.getenv("SENTIMENT_WEIGHT", "0.20"))
+
+# AI_AUDIT_THRESHOLD: Minimum score to trigger an OpenAI deep-dive validation
+# Justification: Economize API calls by only auditing strong institutional setups
+AI_AUDIT_THRESHOLD = float(os.getenv("AI_AUDIT_THRESHOLD", "75.0"))
 
 # =============================================================================
 # SIGNAL TIMING  (Law 3: institutional cadence)

@@ -33,6 +33,8 @@ from modules.discord_alerter import DiscordAlerter
 from modules.signal_journal import SignalJournal
 from modules.learner import Learner
 from modules.dashboard import app as dashboard_app, set_engines
+from modules.sentiment_engine import SentimentEngine
+from modules.ai_auditor import AIAuditor
 
 # =============================================================================
 # LOGGING
@@ -184,6 +186,7 @@ async def main():
     global alpaca_client, polygon_client, schwab_client
     global flow_engine, universe_engine, confluence_engine, options_engine
     global router, discord_alerter, journal, learner
+    global sentiment_engine, ai_auditor
 
     logger.info("=" * 60)
     logger.info("ORDER-FLOW-RADAR™ — Ground-Up Rebuild")
@@ -199,13 +202,20 @@ async def main():
         config.SCHWAB_APP_KEY, config.SCHWAB_APP_SECRET, 
         config.SCHWAB_REFRESH_TOKEN, config.SCHWAB_REDIRECT_URI
     )
+    
+    sentiment_engine = SentimentEngine()
+    ai_auditor = AIAuditor()
 
     # 2. Initialize Engines
     flow_engine       = FlowEngine()
     universe_engine   = UniverseEngine(alpaca_client, polygon_client)
     learner           = Learner()
     options_engine    = OptionsEngine(schwab_client)
-    confluence_engine = ConfluenceEngine(flow_engine, learner.get_weights())
+    confluence_engine = ConfluenceEngine(
+        flow_engine, learner.get_weights(), 
+        sentiment=sentiment_engine, 
+        auditor=ai_auditor
+    )
     discord_alerter   = DiscordAlerter()
     journal           = SignalJournal()
     router            = SignalRouter(discord_alerter, journal)
@@ -263,6 +273,8 @@ async def main():
         await alpaca_client.close()
         await polygon_client.close()
         await schwab_client.close()
+        await sentiment_engine.close()
+        await ai_auditor.close()
         await discord_alerter.close()
         logger.info("ScriptMasterLabs™ clean shutdown complete.")
 

@@ -57,9 +57,11 @@ class ConfluenceEngine:
     No inline magic numbers — see AGENT_LAW.md Law 2.
     """
 
-    def __init__(self, flow: FlowEngine, learned_weights: Dict[str, float] = None):
+    def __init__(self, flow: FlowEngine, learned_weights: Dict[str, float] = None, sentiment: Optional[Any] = None, auditor: Optional[Any] = None):
         self._flow = flow
         self._weights: Dict[str, float] = learned_weights or {}
+        self._sentiment = sentiment
+        self._auditor = auditor
         self.active_signals: Dict[str, Signal] = {}
         self._last_alert: Dict[str, datetime] = {}
 
@@ -74,7 +76,7 @@ class ConfluenceEngine:
     async def evaluate(self, symbol: str) -> Optional[Signal]:
         """
         Evaluate one symbol. Returns Signal if score >= MIN_CONFLUENCE_SCORE, else None.
-        No data invented. If state has no price, skip.
+        Now includes Sentiment Overlay and AI Auditing for institutional hardening.
         """
         state = self._flow.states.get(symbol)
         if not state or state.last_price <= 0:
@@ -83,6 +85,18 @@ class ConfluenceEngine:
         bull_score = 0.0
         bear_score = 0.0
         confluences = []
+
+        # ── Intelligence Layer: Sentiment Overlay (config.SENTIMENT_WEIGHT) ──
+        if self._sentiment:
+            sentiment_val = await self._sentiment.get_sentiment(symbol)
+            if sentiment_val != 0:
+                pts = abs(sentiment_val) * 50.0 * config.SENTIMENT_WEIGHT
+                if sentiment_val > 0:
+                    bull_score += pts
+                    confluences.append(f"SENTIMENT_BULL ({sentiment_val:+.2f})")
+                else:
+                    bear_score += pts
+                    confluences.append(f"SENTIMENT_BEAR ({sentiment_val:+.2f})")
 
         # ── Factor 1: CVD Direction (config.CVD_BOOST_FACTOR) ────────────────
         if state.buy_volume + state.sell_volume > 0:
@@ -144,6 +158,22 @@ class ConfluenceEngine:
 
         if score < config.MIN_CONFLUENCE_SCORE:
             return None
+
+        # ── Intelligence Layer: AI Auditor (config.AI_AUDIT_THRESHOLD) ───────
+        if self._auditor and score >= config.AI_AUDIT_THRESHOLD:
+            audit_data = {
+                "symbol": symbol, "action": direction, "score": score,
+                "cvd_ratio": state.cvd_ratio, "confluences": confluences,
+                "price": state.last_price
+            }
+            audit_res = await self._auditor.audit_signal(audit_data)
+            
+            if not audit_res.get("approved", True):
+                logger.warning(f"AI Auditor REJECTED {symbol} {direction}: {audit_res.get('reason')}")
+                return None
+            
+            score += audit_res.get("ai_score_adj", 0.0)
+            confluences.append(f"AI_CONFIRMED ({audit_res.get('reason')})")
 
         # ── Cooldown check ─────────────────────────────────────────────────────
         now = datetime.utcnow()

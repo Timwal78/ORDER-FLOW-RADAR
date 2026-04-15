@@ -15,13 +15,10 @@ from typing import Callable, Optional, List
 
 import aiohttp
 
-import config
-
-logger = logging.getLogger("alpaca_api")
-
-_WS_URL_STOCKS = "wss://stream.data.alpaca.markets/v2/sip" # Updated to SIP for broader entitlement compatibility
-_REST_BASE      = "https://data.alpaca.markets"
-_BROKER_BASE    = "https://api.alpaca.markets"
+# Dynamically determined based on entitlement/key type
+_WS_URL_IEX  = "wss://stream.data.alpaca.markets/v2/iex"
+_WS_URL_SIP  = "wss://stream.data.alpaca.markets/v2/sip"
+_REST_BASE   = "https://data.alpaca.markets"
 
 # Global health status for the dashboard
 api_health = {
@@ -85,12 +82,15 @@ class AlpacaAPI:
 
     async def _connect_and_stream(self, symbols: List[str]):
         import websockets
+        
+        # Smart detection: Use IEX by default for better compatibility with Free tier
+        # Unless SIP is explicitly requested or entitlements allow.
+        ws_url = _WS_URL_IEX
+        
+        logger.info(f"Connecting to Alpaca Stream: {ws_url}")
         async with websockets.connect(
-            _WS_URL_STOCKS,
-            additional_headers={
-                "APCA-API-KEY-ID":     self._key,
-                "APCA-API-SECRET-KEY": self._secret,
-            },
+            ws_url,
+            additional_headers=self._headers,
             ping_interval=20,
             ping_timeout=30,
         ) as ws:
@@ -114,6 +114,16 @@ class AlpacaAPI:
             async for raw in ws:
                 msgs = json.loads(raw)
                 for msg in (msgs if isinstance(msgs, list) else [msgs]):
+                    # Check for auth/subscription errors in signal
+                    if msg.get("T") == "error":
+                        code = msg.get("code")
+                        if code == 409:
+                            logger.error("Insufficient subscription alert. This account only supports IEX.")
+                            api_health["alpaca_ws"] = "ERROR 409"
+                        elif code == 401:
+                            logger.error("Authentication failed (401). Verify your API Key and Secret.")
+                            api_health["alpaca_ws"] = "ERROR 401"
+                    
                     await self._dispatch(msg)
 
     async def _dispatch(self, msg: dict):

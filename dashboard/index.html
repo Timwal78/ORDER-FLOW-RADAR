@@ -344,23 +344,23 @@
                 const res = await fetch('/api/health');
                 const data = await res.json();
                 const health = data.api;
+                
+                // Fixed Object rendering
                 apiStatusBar.innerHTML = Object.entries(health).map(([key, val]) => {
                     const color = val === 'CONNECTED' || val === 'READY' ? 'var(--green)' : 'var(--red)';
-                    return `<div>${key.toUpperCase()}: <span style="color: ${color}">${val}</span></div>`;
+                    return `<div style="margin-right: 15px;">${key.toUpperCase()}: <span style="color: ${color}">${val}</span></div>`;
                 }).join('');
                 
-                // Update Build Version in stats panel
-                let verEl = document.getElementById('system-version');
+                // Add Version to header if missing
+                let verEl = document.getElementById('system-version-header');
                 if (!verEl) {
                     verEl = document.createElement('div');
-                    verEl.id = 'system-version';
-                    verEl.style.fontSize = '10px';
-                    verEl.style.opacity = '0.5';
-                    verEl.style.marginTop = '20px';
-                    verEl.style.textAlign = 'center';
-                    document.querySelector('.stats-panel').appendChild(verEl);
+                    verEl.id = 'system-version-header';
+                    verEl.style.marginLeft = '15px';
+                    verEl.style.color = 'var(--text-dim)';
+                    apiStatusBar.after(verEl);
                 }
-                verEl.innerText = `BUILD: ${data.version}`;
+                verEl.innerText = `VERSION: ${data.version}`;
             } catch (e) {}
         }
 
