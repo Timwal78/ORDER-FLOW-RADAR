@@ -1,0 +1,27 @@
+Build a production-ready system called S3 (Synthetic System Strain).
+
+S3 is NOT an indicator.
+It is a real-time decision engine that outputs tradeable signals.
+
+REQUIREMENTS:
+- Python backend
+- FastAPI API layer
+- Discord webhook integration
+- CLI test runner
+- JSON output format for Pine/webhooks
+
+CORE OUTPUT FORMAT:
+{
+  "ticker": "FFAI",
+  "s3_score": 87,
+  "state": "IGNITION",
+  "bias": "LONG",
+  "confidence": 78,
+  "suggested_action": "BUY CALLS",
+  "invalidation": "break below support",
+  "position_size_pct": 5
+}
+
+NO FLUFF UI.
+NO EXTRA PANELS.
+FOCUS ON EXECUTION.
