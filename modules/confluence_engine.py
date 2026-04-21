@@ -18,6 +18,33 @@ logger = logging.getLogger("confluence_engine")
 
 
 @dataclass
+class TradePlan:
+    """Actionable trade plan attached to every signal."""
+    grade:        str    # "A", "B", "C", "D"
+    grade_label:  str    # "Strong Buy", "Buy", "Lean Buy", "Speculative"
+    entry:        float  # Entry price (current)
+    stop_loss:    float  # Where to cut losses
+    target_1:     float  # Conservative profit target
+    target_2:     float  # Aggressive profit target
+    risk_reward:  str    # e.g. "2:1"
+    instruction:  str    # Plain English: "BUY QQQ at $485.30..."
+    why:          str    # Plain English reason
+
+    def to_dict(self) -> dict:
+        return {
+            "grade": self.grade,
+            "grade_label": self.grade_label,
+            "entry": round(self.entry, 2),
+            "stop_loss": round(self.stop_loss, 2),
+            "target_1": round(self.target_1, 2),
+            "target_2": round(self.target_2, 2),
+            "risk_reward": self.risk_reward,
+            "instruction": self.instruction,
+            "why": self.why,
+        }
+
+
+@dataclass
 class Signal:
     symbol:      str
     action:      str           # "LONG" | "SHORT"
@@ -28,12 +55,14 @@ class Signal:
     cvd_ratio:   float
     volume:      int
     spread_pct:  float
+    trade_plan:  Optional[TradePlan] = None
     options_recs: List[Dict[str, Any]] = field(default_factory=list)
     fired_at:    datetime = field(default_factory=datetime.utcnow)
     is_new_alert: bool = False
+    ai_auditor_reason: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "symbol":       self.symbol,
             "action":       self.action,
             "score":        round(self.score, 1),
@@ -47,6 +76,11 @@ class Signal:
             "fired_at":     self.fired_at.isoformat(),
             "is_new_alert": self.is_new_alert,
         }
+        if self.trade_plan:
+            d["trade_plan"] = self.trade_plan.to_dict()
+        if self.ai_auditor_reason:
+            d["ai_auditor_reason"] = self.ai_auditor_reason
+        return d
 
 
 class ConfluenceEngine:
@@ -150,9 +184,10 @@ class ConfluenceEngine:
 
         # ── Intelligence Layer: IEX Normalization (Boost for Standard Tiers) ──
         # Justification: IEX is 10% of total volume; we normalize to reach "A/B" grades.
+        # Law 2: Multiplier sourced from config.IEX_VOLUME_NORMALIZER (default 1.5x)
         score_multiplier = 1.0
         if config.ALPACA_FEED == "iex":
-            score_multiplier = 1.5
+            score_multiplier = config.IEX_VOLUME_NORMALIZER
             
         if bull_score > bear_score:
             direction, score = "LONG", bull_score * score_multiplier
@@ -186,6 +221,9 @@ class ConfluenceEngine:
         last = self._last_alert.get(symbol)
         is_new = last is None or (now - last).total_seconds() >= config.SIGNAL_COOLDOWN
 
+        # ── Build Actionable Trade Plan ────────────────────────────────────────
+        trade_plan = self._build_trade_plan(symbol, direction, score, state, confluences)
+
         sig = Signal(
             symbol=symbol,
             action=direction,
@@ -196,6 +234,7 @@ class ConfluenceEngine:
             cvd_ratio=state.cvd_ratio,
             volume=state.total_volume,
             spread_pct=state.spread_pct,
+            trade_plan=trade_plan,
             fired_at=now,
             is_new_alert=is_new,
         )
@@ -205,3 +244,147 @@ class ConfluenceEngine:
             self._last_alert[symbol] = now
 
         return sig
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TRADE PLAN BUILDER — Plain English, Actionable Instructions
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _grade_signal(self, score: float) -> tuple:
+        """Convert raw score to letter grade and human label."""
+        if score >= config.GRADE_A_THRESHOLD:
+            return "A", "Strong"
+        elif score >= config.GRADE_B_THRESHOLD:
+            return "B", "Good"
+        elif score >= config.GRADE_C_THRESHOLD:
+            return "C", "Moderate"
+        else:
+            return "D", "Speculative"
+
+    def _build_trade_plan(self, symbol: str, direction: str, score: float,
+                          state, confluences: List[str]) -> TradePlan:
+        """
+        Generate a complete, actionable trade plan in plain English.
+        The user should be able to read this and know exactly what to do.
+        """
+        price = state.last_price
+        grade, grade_word = self._grade_signal(score)
+
+        # ── Calculate stop loss and targets ────────────────────────────────────
+        stop_pct = config.TRADE_STOP_PCT / 100.0  # e.g. 1.0% -> 0.01
+
+        # Tighter stops for higher grades (more confident), wider for lower
+        grade_adjustments = {"A": 0.8, "B": 1.0, "C": 1.3, "D": 1.5}
+        adj = grade_adjustments.get(grade, 1.0)
+        adjusted_stop_pct = stop_pct * adj
+
+        risk_amount = price * adjusted_stop_pct
+
+        if direction == "LONG":
+            action_word = "BUY"
+            stop_loss = round(price - risk_amount, 2)
+            target_1 = round(price + (risk_amount * config.TRADE_TP1_MULT), 2)
+            target_2 = round(price + (risk_amount * config.TRADE_TP2_MULT), 2)
+            grade_label = f"{grade_word} Buy"
+        else:
+            action_word = "SELL SHORT"
+            stop_loss = round(price + risk_amount, 2)
+            target_1 = round(price - (risk_amount * config.TRADE_TP1_MULT), 2)
+            target_2 = round(price - (risk_amount * config.TRADE_TP2_MULT), 2)
+            grade_label = f"{grade_word} Sell"
+
+        rr_ratio = f"{config.TRADE_TP1_MULT:.0f}:1"
+
+        # ── Build plain-English instruction ────────────────────────────────────
+        instruction = (
+            f"{action_word} {symbol} at ${price:.2f} — "
+            f"Stop Loss ${stop_loss:.2f} | "
+            f"Target 1 ${target_1:.2f} | "
+            f"Target 2 ${target_2:.2f}"
+        )
+
+        # ── Build plain-English "why" ──────────────────────────────────────────
+        why = self._explain_why(symbol, direction, grade, state, confluences)
+
+        return TradePlan(
+            grade=grade,
+            grade_label=grade_label,
+            entry=price,
+            stop_loss=stop_loss,
+            target_1=target_1,
+            target_2=target_2,
+            risk_reward=rr_ratio,
+            instruction=instruction,
+            why=why,
+        )
+
+    def _explain_why(self, symbol: str, direction: str, grade: str,
+                     state, confluences: List[str]) -> str:
+        """
+        Translate technical confluences into a plain-English explanation
+        that anyone can understand — no jargon.
+        """
+        reasons = []
+
+        # CVD explanation
+        if state.cvd_ratio >= 0.65:
+            reasons.append("heavy buying pressure — more buyers than sellers")
+        elif state.cvd_ratio >= 0.55:
+            reasons.append("buyers have the edge right now")
+        elif state.cvd_ratio <= 0.35:
+            reasons.append("heavy selling pressure — sellers are in control")
+        elif state.cvd_ratio <= 0.45:
+            reasons.append("sellers have the edge right now")
+
+        # Block trades
+        block_diff = state.large_buy_count - state.large_sell_count
+        if block_diff >= 2:
+            reasons.append(f"big-money players are buying (seen {state.large_buy_count} large buy orders)")
+        elif block_diff <= -2:
+            reasons.append(f"big-money players are selling (seen {state.large_sell_count} large sell orders)")
+
+        # Volume
+        if state.total_volume > 500_000:
+            reasons.append(f"very high trading volume ({state.total_volume:,} shares)")
+        elif state.total_volume > 100_000:
+            reasons.append(f"strong trading volume ({state.total_volume:,} shares)")
+
+        # Spread
+        if state.spread_pct < 0.05:
+            reasons.append("tight spread — good liquidity for clean fills")
+        elif state.spread_pct > 0.5:
+            reasons.append("wide spread — be careful, fills may slip")
+
+        # Sentiment
+        for c in confluences:
+            if "SENTIMENT_BULL" in c:
+                reasons.append("news sentiment is positive")
+            elif "SENTIMENT_BEAR" in c:
+                reasons.append("news sentiment is negative")
+
+        # AI Auditor
+        for c in confluences:
+            if "AI_CONFIRMED" in c:
+                reason_text = c.split("(", 1)[1].rstrip(")") if "(" in c else "signal validated"
+                reasons.append(f"AI review confirms: {reason_text}")
+
+        # Ask lift / Bid hit
+        if any("ASK_LIFT" in c for c in confluences):
+            reasons.append("buyers are paying the asking price (aggressive buying)")
+        if any("BID_HIT" in c for c in confluences):
+            reasons.append("sellers are hitting the bid (aggressive selling)")
+
+        if not reasons:
+            reasons.append("multiple technical factors align")
+
+        # Confidence qualifier
+        if grade == "A":
+            prefix = "High confidence"
+        elif grade == "B":
+            prefix = "Good setup"
+        elif grade == "C":
+            prefix = "Moderate signal"
+        else:
+            prefix = "Speculative"
+
+        return f"{prefix} — {', '.join(reasons)}."
+

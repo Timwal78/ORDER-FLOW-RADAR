@@ -93,10 +93,10 @@ async def universe_discovery_loop():
             # 1. Scout 100 tickers from all sources (Alpaca/Polygon/Yahoo)
             all_symbols = await universe_engine.build()
             
-            # 2. Determine Tier-1 Radar Priority (Top 30 streaming limit)
-            radar_symbols = universe_engine.get_radar_priority(all_symbols, limit=30)
+            # 2. Determine Tier-1 Radar Priority (respecting WS subscription limit)
+            radar_symbols = universe_engine.get_radar_priority(all_symbols, limit=config.RADAR_WS_LIMIT)
             
-            logger.info(f"Loop: Universe Scouted (100). Radar Active ({len(radar_symbols)}).")
+            logger.info(f"Loop: Universe Scouted ({len(all_symbols)}). Radar Active ({len(radar_symbols)}).")
             
             # 3. Rotate WebSocket subscriptions to stay under Free-Tier limit
             await alpaca_client.update_subscriptions(radar_symbols)
@@ -292,5 +292,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-#   D e p l o y m e n t   R e s e t :   0 4 / 1 5 / 2 0 2 6   1 4 : 3 9 : 3 7  
- 

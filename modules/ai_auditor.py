@@ -29,6 +29,13 @@ class AIAuditor:
         if not self._key:
             return {"approved": True, "reason": "AI Auditor skipped (no key)", "ai_score_adj": 0.0}
 
+        feed_tier = config.ALPACA_FEED.upper()
+        feed_note = (
+            f"The current feed is {feed_tier} (Standard), so reported volumes represent ~10-15% of total market activity. Adjust your scoring accordingly."
+            if config.ALPACA_FEED == "iex"
+            else f"The current feed is {feed_tier} (Full Tape). Volume data represents consolidated market activity."
+        )
+
         prompt = f"""
         Audit this trading signal based on institutional order flow logic:
         Ticker: {signal_data['symbol']}
@@ -39,7 +46,7 @@ class AIAuditor:
         Price: {signal_data['price']}
         
         Is this a high-probability institutional setup or a potential trap/noise?
-        Note: The current feed is IEX (Standard), so reported volumes represent ~10-15% of total market activity. Adjust your scoring accordingly.
+        {feed_note}
         Consider if the CVD ratio aligns with the action.
         
         Return JSON ONLY:

@@ -46,7 +46,11 @@ class SignalRouter:
             # Queue for Discord tiers (Immediate Premium, Delayed Pro/Free)
             await self._dispatch_discord(sig_dict)
 
-            logger.info(f"Routed signal: {signal.symbol} {signal.action} Score: {signal.score:.1f}")
+            # Log the actionable instruction, not just technical data
+            plan = sig_dict.get("trade_plan", {})
+            instruction = plan.get("instruction", f"{signal.symbol} {signal.action}")
+            grade = plan.get("grade", "?")
+            logger.info(f"[Grade {grade}] {instruction}")
 
     async def _dispatch_discord(self, sig_dict: dict):
         """Dispatches to Discord tiers with appropriate delays."""

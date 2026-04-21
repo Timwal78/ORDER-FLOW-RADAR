@@ -95,37 +95,78 @@ class DiscordAlerter:
         self._queue.put_nowait((url, payload))
 
     def _build_embed(self, sig: dict, tier: str) -> dict:
-        color = 0x00FF00 if sig["action"] == "LONG" else 0xFF0000
-        emoji = "🟢" if sig["action"] == "LONG" else "🔴"
-        
+        is_long = sig["action"] == "LONG"
+        color = 0x00C853 if is_long else 0xFF1744  # Green / Red
+        action_emoji = "🟢" if is_long else "🔴"
+        action_word = "BUY" if is_long else "SELL SHORT"
+
+        plan = sig.get("trade_plan", {})
+        grade = plan.get("grade", "?")
+        grade_label = plan.get("grade_label", sig["action"])
+
+        # Grade emoji
+        grade_emojis = {"A": "🔥", "B": "⚡", "C": "📊", "D": "⚠️"}
+        grade_emoji = grade_emojis.get(grade, "❓")
+
         embed = {
-            "title": f"{emoji} {sig['action']} SIGNAL: {sig['symbol']}",
-            "description": f"Institutional order flow detected for **{sig['symbol']}**.",
+            "title": f"{action_emoji} {action_word} {sig['symbol']} — Grade {grade}",
+            "description": plan.get("instruction", f"{action_word} {sig['symbol']} at ${sig['price']:.2f}"),
             "color": color,
-            "fields": [
-                {"name": "Price", "value": f"${sig['price']:.2f}", "inline": True},
-                {"name": "Score", "value": f"{sig['score']:.1f}", "inline": True},
-                {"name": "CVD Ratio", "value": f"{sig['cvd_ratio']:.0%}", "inline": True},
-            ],
+            "fields": [],
             "footer": {"text": f"Order-Flow-Radar™ | {sig['fired_at'][:19]}"}
         }
 
-        # Add confluences
-        embed["fields"].append({
-            "name": "Confluences",
-            "value": " • " + "\n • ".join(sig["confluences"]),
-            "inline": False
-        })
+        # ── THE TRADE PLAN (most important — top of embed) ────────────────
+        if plan:
+            embed["fields"].append({
+                "name": "📍 Entry Price",
+                "value": f"**${plan.get('entry', sig['price']):.2f}**",
+                "inline": True
+            })
+            embed["fields"].append({
+                "name": "🛑 Stop Loss",
+                "value": f"**${plan.get('stop_loss', 0):.2f}**",
+                "inline": True
+            })
+            embed["fields"].append({
+                "name": f"{grade_emoji} Grade",
+                "value": f"**{grade} — {grade_label}**",
+                "inline": True
+            })
+            embed["fields"].append({
+                "name": "🎯 Target 1 (Conservative)",
+                "value": f"**${plan.get('target_1', 0):.2f}**",
+                "inline": True
+            })
+            embed["fields"].append({
+                "name": "🎯 Target 2 (Extended)",
+                "value": f"**${plan.get('target_2', 0):.2f}**",
+                "inline": True
+            })
+            embed["fields"].append({
+                "name": "⚖️ Risk/Reward",
+                "value": f"**{plan.get('risk_reward', 'N/A')}**",
+                "inline": True
+            })
 
-        # Add AI Audit if present
+            # The WHY — plain English explanation
+            why = plan.get("why", "")
+            if why:
+                embed["fields"].append({
+                    "name": "💡 Why This Trade",
+                    "value": f"*{why}*",
+                    "inline": False
+                })
+
+        # ── AI Audit (if present) ─────────────────────────────────────────
         if sig.get("ai_auditor_reason"):
             embed["fields"].append({
-                "name": "🤖 Institutional AI Auditor",
+                "name": "🤖 AI Validation",
                 "value": f"*{sig['ai_auditor_reason']}*",
                 "inline": False
             })
 
-        # Add options recommendations (Premium only)
+        # ── Options strategies (Premium only) ─────────────────────────────
         if tier == "premium" and sig.get("options_recs"):
             rec_lines = []
             for r in sig["options_recs"]:
@@ -134,7 +175,7 @@ class DiscordAlerter:
                     f"(Delta: {r['delta']:.2f}, Mid: ${r['mid']:.2f}, OI: {r['open_interest']:,})"
                 )
             embed["fields"].append({
-                "name": "🎯 Alpha Strategies (Institutional)",
+                "name": "🎯 Options Plays (Institutional)",
                 "value": "\n".join(rec_lines),
                 "inline": False
             })

@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # System Metadata
-# LAW 1.1: Verification string for build audits. (v1.3.1 Expansion Hardened)
-SYSTEM_VERSION = "Inst-v1.3.1"
+# LAW 1.1: Verification string for build audits. (v2.1 Institutional Stabilization)
+SYSTEM_VERSION = "Inst-v2.1"
 
 # =============================================================================
 # API KEYS — All from .env. No defaults. No fakes.
@@ -22,6 +22,10 @@ ALPACA_API_SECRET = os.getenv("ALPACA_SECRET_KEY", "")
 POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY", "")
 ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
+
+# ALPACA_FEED: "iex" (free) or "sip" (paid). Controls IEX normalization in ConfluenceEngine.
+# Justification: IEX reports ~10-15% of total volume; scoring must be calibrated to the feed tier.
+ALPACA_FEED = os.getenv("ALPACA_FEED", "iex")
 
 SCHWAB_APP_KEY       = os.getenv("SCHWAB_APP_KEY", "")
 # ... (rest of keys) ...
@@ -47,7 +51,7 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
 # Institutional Safety Net: SPY, QQQ, IWM added to ensure radar is never empty.
 ALWAYS_SCAN = [
     s.strip().upper()
-    for s in os.getenv("ALWAYS_SCAN", "AMC,GME,SPY,QQQ,IWM").split(",")
+    for s in os.getenv("ALWAYS_SCAN", "SPY,QQQ,IWM").split(",")
     if s.strip()
 ]
 
@@ -59,6 +63,10 @@ LARGE_CAP_CEILING = float(os.getenv("LARGE_CAP_CEILING", "2e12"))  # Cap at 2T; 
 # Polygon Free Tier: 5 calls/min limit. 
 # Selection: 60s refresh = 3 calls/min (gainers, losers, screener), leaving headroom.
 UNIVERSE_REFRESH_SECONDS = int(os.getenv("UNIVERSE_REFRESH_SECONDS", "60"))
+
+# RADAR_WS_LIMIT: Max symbols to stream via WebSocket (Alpaca Free-Tier IEX safety)
+# Justification: Free IEX plan caps concurrent subscriptions. 20 is safe headroom.
+RADAR_WS_LIMIT = int(os.getenv("RADAR_WS_LIMIT", "20"))
 
 # Memory & State Safety (15 min TTL, 2 min Stale)
 TICKER_TTL_SECONDS      = int(os.getenv("TICKER_TTL_SECONDS", "900"))
@@ -94,6 +102,25 @@ MOMENTUM_EMA_SLOW = int(os.getenv("MOMENTUM_EMA_SLOW", "21"))
 # MIN_CONFLUENCE_SCORE: Signals below this score are discarded (not shown, not alerted)
 # Justification: Quality gate — lowered to 35.0 for IEX-compatible sensitivity
 MIN_CONFLUENCE_SCORE = float(os.getenv("MIN_CONFLUENCE_SCORE", "35.0"))
+
+# IEX_VOLUME_NORMALIZER: Score multiplier when running on IEX (Standard) feed
+# Justification: IEX captures ~10-15% of tape; raw scores under-report. 1.5x normalizes to SIP-equivalent.
+IEX_VOLUME_NORMALIZER = float(os.getenv("IEX_VOLUME_NORMALIZER", "1.5"))
+
+# =============================================================================
+# TRADE PLAN / GRADE SYSTEM (Actionable Signal Output)
+# =============================================================================
+# Signal Grade Thresholds — determines confidence label on every alert
+GRADE_A_THRESHOLD = float(os.getenv("GRADE_A_THRESHOLD", "80.0"))   # Strong institutional setup
+GRADE_B_THRESHOLD = float(os.getenv("GRADE_B_THRESHOLD", "60.0"))   # Good setup, worth watching
+GRADE_C_THRESHOLD = float(os.getenv("GRADE_C_THRESHOLD", "45.0"))   # Moderate — smaller size
+# Below C = Grade D (marginal)
+
+# Trade Plan Risk Parameters — percentage-based stop/target levels
+# These define how tight or wide the stop loss and profit targets are
+TRADE_STOP_PCT   = float(os.getenv("TRADE_STOP_PCT", "1.0"))    # 1.0% default stop loss
+TRADE_TP1_MULT   = float(os.getenv("TRADE_TP1_MULT", "2.0"))    # 2:1 risk/reward for Target 1
+TRADE_TP2_MULT   = float(os.getenv("TRADE_TP2_MULT", "3.0"))    # 3:1 risk/reward for Target 2
 
 # =============================================================================
 # INTELLIGENCE OVERLAY

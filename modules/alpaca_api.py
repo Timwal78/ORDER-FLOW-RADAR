@@ -15,6 +15,8 @@ from typing import Callable, Optional, List
 
 import aiohttp
 
+logger = logging.getLogger("alpaca_api")
+
 # Dynamically determined based on entitlement/key type
 _WS_URL_IEX  = "wss://stream.data.alpaca.markets/v2/iex"
 _WS_URL_SIP  = "wss://stream.data.alpaca.markets/v2/sip"
@@ -84,43 +86,45 @@ class AlpacaAPI:
     async def update_subscriptions(self, symbols: List[str]):
         """
         Dynamically update WebSocket subscriptions without disconnecting.
-        Fulfillment of 'Tiered Radar' requirement for v1.3.
+        IMPORTANT: Unsubscribe FIRST to free slots, then subscribe new ones.
         """
         if not self._ws or not self._running:
             return
             
-        to_sub = set(symbols) - self._subscribed
-        to_unsub = self._subscribed - set(symbols)
+        new_set = set(symbols)
+        to_unsub = self._subscribed - new_set
+        to_sub = new_set - self._subscribed
         
+        # Step 1: Unsubscribe first to free up slots
         if to_unsub:
             await self._ws.send(json.dumps({
                 "action": "unsubscribe",
                 "trades": list(to_unsub),
                 "quotes": list(to_unsub)
             }))
+            self._subscribed -= to_unsub
             logger.info(f"Unsubscribed from {len(to_unsub)} symbols")
+            await asyncio.sleep(0.5)  # Let server process before adding new
             
+        # Step 2: Subscribe new symbols
         if to_sub:
             await self._ws.send(json.dumps({
                 "action": "subscribe",
                 "trades": list(to_sub),
                 "quotes": list(to_sub)
             }))
-            logger.info(f"Subscribed to {len(to_sub)} new symbols")
-            
-        self._subscribed = set(symbols)
+            self._subscribed |= to_sub
+            logger.info(f"Subscribed to {len(to_sub)} new symbols (total: {len(self._subscribed)})")
 
     async def _connect_and_stream(self, symbols: List[str]):
         import websockets
         
         # Smart detection: Use IEX by default for better compatibility with Free tier
-        # Unless SIP is explicitly requested or entitlements allow.
         ws_url = _WS_URL_IEX
         
         logger.info(f"Connecting to Alpaca Stream: {ws_url}")
         async with websockets.connect(
             ws_url,
-            additional_headers=self._headers,
             ping_interval=20,
             ping_timeout=30,
         ) as ws:
@@ -128,8 +132,12 @@ class AlpacaAPI:
             api_health["alpaca_ws"] = "CONNECTED"
             logger.info("Alpaca WebSocket connected")
 
-            # Auth
+            # Auth via message (NOT headers — headers cause 'already authenticated' 403)
             await ws.send(json.dumps({"action": "auth", "key": self._key, "secret": self._secret}))
+
+            # Wait for auth response before subscribing
+            auth_resp = await ws.recv()
+            logger.info(f"Auth response received")
 
             # Subscribe to initial symbols
             if symbols:
@@ -176,14 +184,19 @@ class AlpacaAPI:
 
         elif t == "error":
             code = msg.get("code")
-            error_msg = msg.get("msg")
+            error_msg = msg.get("msg", "")
             
-            if code == 406:
-                logger.error("ALpaca Critical: Connection limit exceeded (406). Multiple sessions detected.")
+            if code == 403 and "already authenticated" in error_msg:
+                pass  # Harmless — ignore silently
+            elif code == 405:
+                logger.warning(f"Alpaca: Symbol limit exceeded (405). Reduce RADAR_WS_LIMIT in config.")
+                api_health["alpaca_ws"] = "LIMIT_HIT"
+            elif code == 406:
+                logger.error("Alpaca Critical: Connection limit exceeded (406). Multiple sessions detected.")
                 logger.error("System will pause to allow remote socket cooldown.")
-                self._running = False # Stop loop to prevent thrashing Alpaca
+                self._running = False
             elif code == 401:
-                logger.error("Alpaca Critical: Authentication failed (401). Check keys and environment (Live vs Paper).")
+                logger.error("Alpaca Critical: Authentication failed (401). Check keys and environment.")
                 self._running = False
             else:
                 logger.error(f"Alpaca WS error: {msg}")
@@ -249,18 +262,19 @@ class AlpacaAPI:
         """
         Fetch most-active US stocks from Alpaca screener.
         Returns symbol list — no slice limits applied here (caller decides).
+        Endpoint: /v1beta1/screener/stocks/most-actives
         """
         session = self._get_session()
         try:
-            # Shift to stable Data-V2 most-actives (Requires Market Data+ on some accounts)
             async with session.get(
-                f"{_REST_BASE}/v2/stocks/most-actives",
+                f"{_REST_BASE}/v1beta1/screener/stocks/most-actives",
                 headers=self._headers,
-                params={"top": top, "by": "volume"},
+                params={"top": min(top, 100), "by": "volume"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
+                    # Response format: {"most_actives": [{"symbol": "...", "volume": ..., ...}]}
                     stocks = data.get("most_actives", [])
                     api_health["alpaca_rest"] = "READY"
                     return [s["symbol"] for s in stocks if s.get("symbol")]

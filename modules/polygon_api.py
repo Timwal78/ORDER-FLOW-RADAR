@@ -18,6 +18,8 @@ import aiohttp
 
 import config
 
+from libsml.rate_guard import AsyncPolygonRateGuard
+
 logger = logging.getLogger("polygon_api")
 
 _BASE = "https://api.polygon.io"
@@ -49,11 +51,15 @@ class PolygonAPI:
         if params:
             p.update(params)
         try:
+            await AsyncPolygonRateGuard.wait()
             async with self._get_session().get(
                 url, params=p, timeout=aiohttp.ClientTimeout(total=12)
             ) as resp:
                 if resp.status == 200:
                     return await resp.json()
+                if resp.status == 429:
+                    await AsyncPolygonRateGuard.emergency_backoff()
+                    return await self._get(url, params)
                 body = await resp.text()
                 logger.error(f"Polygon {resp.status} {url}: {body[:120]}")
                 return None
