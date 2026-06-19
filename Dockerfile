@@ -11,6 +11,10 @@ ENV DASHBOARD_PORT=8080
 
 WORKDIR /app
 
+# Prevent glibc memory fragmentation (OOM Fix)
+ENV MALLOC_ARENA_MAX=2
+ENV PYTHONUNBUFFERED=1
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
