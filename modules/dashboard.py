@@ -10,6 +10,7 @@ FastAPI server providing:
 from __future__ import annotations
 import asyncio
 import logging
+import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -22,12 +23,15 @@ import config
 
 logger = logging.getLogger("dashboard_server")
 
+_cors_raw = os.getenv("CORS_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_raw else ["http://localhost:3000", "http://localhost:5173"]
+
 app = FastAPI(title="Order Flow Radar™")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 from modules.alpaca_api import api_health
