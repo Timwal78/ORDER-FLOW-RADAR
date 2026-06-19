@@ -24,11 +24,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Non-root user
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+
 # Copy application code
 COPY . .
 
 # Create directory for runtime logs/data
-RUN mkdir -p signal_data
+RUN mkdir -p signal_data && chown -R appuser:appgroup /app
+
+USER appuser
 
 # Expose the dashboard port
 EXPOSE 8080
