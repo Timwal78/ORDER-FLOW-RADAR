@@ -1,0 +1,13 @@
+{
+  "name": "ORDER-FLOW-RADAR",
+  "description": "Real-time order flow radar for institutional flow detection",
+  "owner": "ScriptMasterLabs",
+  "github": "https://github.com/timwal78/ORDER-FLOW-RADAR",
+  "contact": "scriptmasterlabs@gmail.com",
+  "sovereign": {
+    "noMockData": true,
+    "liveDataOnly": true,
+    "noTelemetry": true,
+    "enforcedBy": ".github/workflows/sovereign-data-check.yml"
+  }
+}
